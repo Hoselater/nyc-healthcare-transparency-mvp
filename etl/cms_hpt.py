@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -158,7 +159,9 @@ def discover_all(targets: list[dict] | None = None) -> list[MrfLocation]:
     targets = targets if targets is not None else load_targets()
     found: list[MrfLocation] = []
 
-    for target in targets:
+    for index, target in enumerate(targets):
+        if index:
+            time.sleep(config.CRAWL_DELAY_SECONDS)
         name = target["system_name"]
 
         # A manually-sourced URL wins: it means someone already checked.

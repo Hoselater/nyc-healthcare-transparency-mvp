@@ -172,6 +172,12 @@ HTTP_HEADERS_FALLBACK = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 HTTP_TIMEOUT = (15, 180)          # (connect, read) seconds
+
+# Courtesy pause between requests to hospital servers. The cms-hpt.txt protocol
+# exists to invite automated collection, but that is not licence to hammer a
+# hospital's web server from a public repository. One second between hosts costs
+# under a minute across the whole crawl.
+CRAWL_DELAY_SECONDS = float(os.getenv("CRAWL_DELAY_SECONDS", "1.0"))
 MRF_BATCH_ROWS = int(os.getenv("MRF_BATCH_ROWS", "5000"))
 MRF_MAX_ROWS_SCANNED = int(os.getenv("MRF_MAX_ROWS_SCANNED", "0"))  # 0 = unlimited
 

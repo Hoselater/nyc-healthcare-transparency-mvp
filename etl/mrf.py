@@ -13,6 +13,7 @@ import io
 import logging
 import re
 import sys
+import time
 import zipfile
 from typing import Any, Iterator
 
@@ -623,7 +624,9 @@ def ingest_all(locations: list, truncate_first: bool = True) -> int:
         db.truncate("stg_cms_mrf")
 
     total = 0
-    for location in locations:
+    for index, location in enumerate(locations):
+        if index:
+            time.sleep(config.CRAWL_DELAY_SECONDS)
         total += ingest_mrf(location.label, location.mrf_url)
 
     log.info("Inserted %s pricing rows in total.", total)

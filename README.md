@@ -11,6 +11,14 @@ Index** for each health system.
 <!-- Fill these in once deployed -- see docs/DEPLOYMENT.md -->
 **[Live app](#)** · **[Tableau dashboard](#)** · **[Deployment guide](docs/DEPLOYMENT.md)** · **[Engineering notes](docs/ERRATA.md)**
 
+> ### ⚠️ Portfolio project — not medical or financial advice
+>
+> The Value Index is a **reasoned heuristic, never calibrated against patient
+> outcomes**. Length of stay is a proxy, not a quality measure, and published
+> rates are not what a patient pays. **Do not use this to choose a hospital.**
+> Read **[DISCLAIMER.md](DISCLAIMER.md)** before drawing any conclusion from the
+> numbers.
+
 ---
 
 ## Architecture
@@ -276,6 +284,8 @@ config.py                  Environment-driven configuration
 run_pipeline.py            CLI runner
 requirements.txt
 .env.example               Copy to .env
+LICENSE                    MIT
+DISCLAIMER.md              Scope, limitations, and what this is not
 .streamlit/                Theme and secrets template for the web app
 sql/
   01_staging_schema.sql    Tables, indexes, pipeline_config
@@ -296,5 +306,6 @@ data/
   nyc_ortho_scores_public.csv    Published snapshot read by the web app
 docs/
   DEPLOYMENT.md            Free hosting, start to finish
+  Healthcare Transparency MVP - Master Plan v3.docx / .pdf
   ERRATA.md                Defects found in the original scripts
 ```
