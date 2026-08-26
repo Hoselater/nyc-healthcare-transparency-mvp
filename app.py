@@ -123,7 +123,7 @@ def col(name: str, default=None):
 # --- Sidebar filters -------------------------------------------------------
 st.sidebar.header("Filters")
 
-boroughs = sorted(scores["hospital_county"].dropna().unique()) if "hospital_county" in scores else []
+boroughs = sorted(scores["borough"].dropna().unique()) if "borough" in scores else []
 chosen_boroughs = st.sidebar.multiselect("Borough", boroughs, default=boroughs)
 
 cost_series = col("facility_procedure_cost")
@@ -170,8 +170,8 @@ if "last_discharge_year" in scores.columns:
 
 # --- Apply filters ---------------------------------------------------------
 view = scores.copy()
-if chosen_boroughs and "hospital_county" in view:
-    view = view[view["hospital_county"].isin(chosen_boroughs)]
+if chosen_boroughs and "borough" in view:
+    view = view[view["borough"].isin(chosen_boroughs)]
 if max_cost is not None and "facility_procedure_cost" in view:
     view = view[view["facility_procedure_cost"] <= max_cost]
 if "patient_volume" in view:
@@ -215,17 +215,24 @@ if plot_columns.issubset(view.columns):
             plot_data,
             x="clinical_oe",
             y="facility_procedure_cost",
-            size="patient_volume",
+            size="patient_volume" if "patient_volume" in plot_data else None,
             color="star_rating" if "star_rating" in plot_data else None,
             hover_name="facility_name",
+            # Built from what the frame actually has. Plotly raises on any
+            # unknown key, and a schema change should not turn the public demo
+            # into a red traceback.
             hover_data={
-                "hospital_county": True,
-                "patient_volume": ":,",
-                "observed_avg_los": ":.2f",
-                "expected_avg_los": ":.2f",
-                "facility_procedure_cost": ":$,.0f",
-                "value_index": ":.3f",
-                "clinical_oe": False,
+                key: fmt
+                for key, fmt in {
+                    "borough": True,
+                    "patient_volume": ":,",
+                    "observed_avg_los": ":.2f",
+                    "expected_avg_los": ":.2f",
+                    "facility_procedure_cost": ":$,.0f",
+                    "value_index": ":.3f",
+                    "clinical_oe": False,
+                }.items()
+                if key in plot_data.columns
             },
             color_continuous_scale="RdYlGn",
             labels={
@@ -247,7 +254,7 @@ if plot_columns.issubset(view.columns):
         figure.add_vline(x=1.0, line_dash="dash", line_color="gray",
                          annotation_text="as expected")
         figure.update_layout(height=520, margin=dict(t=20, b=20))
-        st.plotly_chart(figure, use_container_width=True)
+        st.plotly_chart(figure, width="stretch")
     else:
         st.info("No facilities have both a price and a clinical score under these filters.")
 
@@ -261,7 +268,7 @@ table["Rating"] = table["star_rating"].apply(stars) if "star_rating" in table el
 
 display_columns = {
     "facility_name": "Facility",
-    "hospital_county": "Borough",
+    "borough": "Borough",
     "Rating": "Rating",
     "value_index": "Value Index",
     "facility_procedure_cost": "Cost",
@@ -274,7 +281,7 @@ present = {k: v for k, v in display_columns.items() if k in table.columns}
 
 st.dataframe(
     table[list(present)].rename(columns=present),
-    use_container_width=True,
+    width="stretch",
     hide_index=True,
     column_config={
         "Cost": st.column_config.NumberColumn(format="$%d"),

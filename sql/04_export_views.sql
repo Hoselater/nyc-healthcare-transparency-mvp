@@ -49,6 +49,19 @@ SELECT
     c.cms_facility_name,
     c.pfi_number,
     c.hospital_county,
+    -- Consumer-facing borough name. SPARCS labels the same borough 'Manhattan'
+    -- in 2022 and 'New York' in 2024, so the raw county would show up as two
+    -- separate boroughs in any filter built on it. Kings and Richmond are also
+    -- county names no New Yorker uses for the place they live.
+    CASE lower(btrim(c.hospital_county))
+        WHEN 'manhattan' THEN 'Manhattan'
+        WHEN 'new york'  THEN 'Manhattan'
+        WHEN 'kings'     THEN 'Brooklyn'
+        WHEN 'richmond'  THEN 'Staten Island'
+        WHEN 'queens'    THEN 'Queens'
+        WHEN 'bronx'     THEN 'Bronx'
+        ELSE c.hospital_county
+    END                             AS borough,
     c.primary_zip3,
 
     -- The year span matters for comparability: with multiple SPARCS releases

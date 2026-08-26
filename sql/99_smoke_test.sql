@@ -91,25 +91,34 @@ VALUES
 
 \echo '--- seeding synthetic CMS MRF ---------------------------------------'
 
--- Facility A: three payer lines for DRG 470 -> median negotiated 30000.
--- Facility B: two payer lines -> median negotiated 60000.
--- Decoys that the old `billing_code LIKE '%470%'` test wrongly swept in:
---   '4700', '1470', and a CPT '47010' -- all must be rejected.
--- Facility A also publishes a *verbose* MRF (more lines than B) to prove the
--- market median is taken over facility medians, not over raw price lines.
+-- billing_code holds the NORMALISED 3-digit number and billing_code_type the
+-- DRG system, both resolved by the Python parser before insert. Raw forms like
+-- 'MS-DRG 470', '0470' or '4700' never reach this table -- those are rejected
+-- upstream, and etl/mrf.py has unit coverage proving it. What the SQL must get
+-- right is the system and setting filtering, and the MS-DRG-over-APR preference.
+--
+-- Facility A: three MS-DRG 470 payer lines -> median negotiated 30000.
+--             Also publishes APR-DRG 324, which MS-DRG must outrank.
+-- Facility B: APR-DRG only (NYU Langone's real situation) -> median 60000.
+-- Facility A publishes a more verbose MRF than B, proving the market median is
+-- taken over facility medians rather than raw price lines.
 
 INSERT INTO stg_cms_mrf (facility_name, billing_code, billing_code_type, setting,
     payer_name, plan_name, discounted_cash_price, payer_specific_negotiated_charge)
 VALUES
     ('Facility A Hospital','470','MS-DRG','inpatient','Aetna','PPO',25000,28000),
-    ('Facility A Hospital','MS-DRG 470','MS-DRG','inpatient','Cigna','HMO',25000,30000),
-    ('Facility A Hospital','0470','MS-DRG','inpatient','United','EPO',25000,32000),
-    ('Facility A Hospital','4700','MS-DRG','inpatient','Aetna','PPO',999999,999999),
-    ('Facility A Hospital','1470','MS-DRG','inpatient','Aetna','PPO',999999,999999),
-    ('Facility A Hospital','47010','CPT','outpatient','Aetna','PPO',999999,999999),
+    ('Facility A Hospital','470','MS-DRG','inpatient','Cigna','HMO',25000,30000),
+    ('Facility A Hospital','470','MS-DRG','inpatient','United','EPO',25000,32000),
+    -- Same facility, APR-DRG 324. A target code, but MS-DRG outranks it, so
+    -- these must not dilute Facility A's median.
+    ('Facility A Hospital','324','APR-DRG','inpatient','Aetna','PPO',99999,99999),
+    -- Decoys the system and setting filters must reject
     ('Facility A Hospital','470','CPT','outpatient','Aetna','PPO',888888,888888),
-    ('Facility B Medical Center','470','MS-DRG','inpatient','Aetna','PPO',55000,55000),
-    ('Facility B Medical Center','DRG-470','MS-DRG','inpatient','Cigna','HMO',55000,65000);
+    ('Facility A Hospital','470','APR-DRG','inpatient','Aetna','PPO',777777,777777),
+    ('Facility A Hospital','470','MS-DRG','outpatient','Aetna','PPO',666666,666666),
+    -- Facility B publishes APR-DRG only: the fallback path must price it.
+    ('Facility B Medical Center','324','APR-DRG','inpatient','Aetna','PPO',55000,55000),
+    ('Facility B Medical Center','326','APR-DRG','inpatient','Cigna','HMO',55000,65000);
 
 \echo '--- seeding crosswalk -----------------------------------------------'
 INSERT INTO facility_crosswalk (pfi_number, sparcs_facility_name, cms_facility_name,
@@ -242,11 +251,22 @@ BEGIN
     SELECT count(*) INTO v_int FROM facility_clinical_metrics;
     ASSERT v_int = 2, format('volume_floor/geography: expected 2 scored facilities, got %s', v_int);
 
-    -- 7. DRG matching. Original bug: LIKE '%470%' matched 4700/1470/47010.
-    --    Facility A must keep exactly the 3 inpatient MS-DRG 470 lines.
+    -- 7. System and setting filtering, plus MS-DRG outranking APR-DRG.
+    --    Facility A must keep exactly the 3 inpatient MS-DRG 470 lines: the
+    --    outpatient row, the CPT row, the APR-DRG 470 row (a different
+    --    procedure) and even the legitimate APR-DRG 324 row are all excluded.
     SELECT price_line_count INTO v_int FROM facility_pricing
         WHERE facility_name = 'Facility A Hospital';
     ASSERT v_int = 3, format('drg_match: Facility A should have 3 price lines, got %s', v_int);
+
+    SELECT pricing_code_system INTO v_txt FROM facility_pricing
+        WHERE facility_name = 'Facility A Hospital';
+    ASSERT v_txt = 'MS-DRG', format('system_rank: Facility A should price on MS-DRG, got %s', v_txt);
+
+    -- 7b. Facility B publishes APR-DRG only, so the fallback must price it.
+    SELECT pricing_code_system INTO v_txt FROM facility_pricing
+        WHERE facility_name = 'Facility B Medical Center';
+    ASSERT v_txt = 'APR-DRG', format('apr_fallback: Facility B should price on APR-DRG, got %s', v_txt);
 
     SELECT median_negotiated_charge INTO v_num FROM facility_pricing
         WHERE facility_name = 'Facility A Hospital';
