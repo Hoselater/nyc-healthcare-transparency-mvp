@@ -128,8 +128,35 @@ What each screen should carry:
 | Outpatient pricing | HSS alone publishes 13 outpatient centres, all currently unparsed | Parse **CPT 27130 (hip) and 27447 (knee)** from the outpatient MRFs — implementable now, not yet built |
 | Cost data ends 2021 | Fallback-priced facilities carry stale prices against 2022–2024 clinical data | Wider MRF coverage, or a newer SPARCS cost release |
 | Mount Sinai, NYC H+H | Two large systems with no price data | Their CDNs block all automated agents; needs a manually downloaded file |
+| Montefiore | File now retrievable, but unusable | See below |
+| SUNY Downstate | File retrievable, unparseable | Their MRF has no recognisable code columns; needs a format-specific parser |
 | Surgeon-level data | Volume is measured per hospital, but outcomes track the surgeon at least as strongly | No public NY source; would need Medicare claims |
 
 **The single highest-value next addition is CPT-based outpatient pricing.** The
 files are already being crawled and the codes are well defined; it is a parser
 change, not a new data acquisition problem.
+
+---
+
+## Case study: why Montefiore was retrieved and then discarded
+
+Montefiore's `cms-hpt.txt` was unreachable because their TLS certificate has
+expired. Allow-listing the host for unverified TLS recovered the file and eight
+campus locations, including Wakefield — the market's third-largest joint
+replacement centre at 2,736 procedures.
+
+The file turned out to be unusable anyway. Across 56 DRG-470 rows covering six
+payers, **every dollar field is empty**: no gross charge, no discounted cash
+price, no payer-specific negotiated rate. The only populated numeric field is
+`standard_charge|min`, and it holds the same value — **$6,330** — on all 56
+rows, against a market median negotiated rate near $37,000. That is a
+de-identified floor across all payers, not a price for this procedure.
+
+So Montefiore is technically compliant and practically uninformative, and the
+pipeline treats it as unpriced. Wakefield continues to score on the SPARCS list
+charge, exactly as before.
+
+The wider point: **retrieving a file is not the same as obtaining data.** A
+compliance checkbox and a usable price are different things, and roughly a
+quarter of the "successful" crawls in this project produce zero usable rows.
+Any coverage statistic quoted from crawl success alone would overstate reality.
