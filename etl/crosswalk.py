@@ -40,7 +40,40 @@ def normalize_name(name: str | None) -> str:
     text = text.replace("&", " and ").replace("-", " ").replace("'", "")
     text = _PUNCT.sub(" ", text)
     text = _NOISE.sub(" ", text)
+    text = _SPACE.sub(" ", text).strip()
+    for src, dst in _ALIASES.items():
+        if src in text:
+            text = text.replace(src, dst)
     return _SPACE.sub(" ", text).strip()
+
+
+# Abbreviations and rebrandings no string-similarity metric can bridge, because
+# the two forms share almost no characters. Each was confirmed by inspection.
+_ALIASES = {
+    "sbh": "st barnabas",
+    "rumc": "richmond university",
+    "nyp": "newyork presbyterian",
+    "new york presbyterian": "newyork presbyterian",
+    "nyu langone hospitals": "nyu langone tisch",
+    "mount sinai mount sinai queens": "mount sinai queens",
+    "hospital for special surgery": "special surgery",
+}
+
+_STOPWORDS = {"new", "york", "the", "and", "for", "of"}
+
+
+def significant_tokens(normalized: str) -> set[str]:
+    """Tokens carrying identifying signal, used as a match precondition.
+
+    Pure similarity scores are noisy across a pool of 60+ hospital names:
+    'nyu langone orthopedic' scores 42 against 'Peconic Bay Medical Center',
+    which is meaningless. Requiring at least one substantial shared token kills
+    that class of coincidence outright, which in turn makes it safe to lower the
+    similarity threshold far enough to catch the real near-misses -- NYP
+    Columbia against 'NewYork-Presbyterian Columbia University Irving Medical
+    Center' only scores 67.
+    """
+    return {t for t in normalized.split() if len(t) >= 4 and t not in _STOPWORDS}
 
 
 def _fetch_sparcs_facilities() -> list[dict]:
@@ -133,6 +166,7 @@ def build(write_review_csv: bool = True) -> int:
             continue
 
         norm = normalize_name(facility["name"])
+        tokens = significant_tokens(norm)
         match_name: str | None = None
         method: str | None = None
         score: float | None = None
@@ -141,10 +175,19 @@ def build(write_review_csv: bool = True) -> int:
             match_name = cms_by_norm[norm]
             method, score = "exact", 100.0
         elif norm and choices:
-            available = [c for c in choices if cms_by_norm[c] not in claimed]
+            # Only names sharing an identifying token are even eligible.
+            available = [
+                c
+                for c in choices
+                if cms_by_norm[c] not in claimed and tokens & significant_tokens(c)
+            ]
             if available:
                 best = process.extractOne(
-                    norm, available, scorer=fuzz.token_sort_ratio,
+                    norm, available,
+                    # token_set_ratio, not token_sort_ratio: hospital names differ
+                    # by extra words far more often than by word order, and
+                    # token_set forgives the extra words.
+                    scorer=fuzz.token_set_ratio,
                     score_cutoff=config.FUZZY_MIN_SCORE,
                 )
                 if best:

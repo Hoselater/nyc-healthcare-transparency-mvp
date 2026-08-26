@@ -125,6 +125,41 @@ SET facility_procedure_cost = coalesce(median_negotiated_charge, median_cash_pri
 
 
 -- =============================================================================
+-- STEP 1b: SPARCS Cost Transparency, as a fallback cost source
+--
+-- Keyed on the PFI, so it needs no crosswalk and covers every Article 28
+-- facility -- where MRF crawling reaches a fraction of the market. Takes the
+-- most recent year available per facility, summed across severity tiers and
+-- weighted by discharge count, so a facility's figure reflects its actual mix
+-- rather than an unweighted average of tiers it barely uses.
+-- =============================================================================
+DROP TABLE IF EXISTS facility_cost_sparcs CASCADE;
+
+CREATE TABLE facility_cost_sparcs AS
+WITH latest AS (
+    SELECT pfi_number, max(data_year) AS data_year
+    FROM stg_sparcs_cost
+    WHERE median_charge > 0 OR median_cost > 0
+    GROUP BY pfi_number
+)
+SELECT
+    s.pfi_number,
+    l.data_year,
+    sum(s.discharges)                                             AS cost_discharges,
+    round(sum(s.median_charge * s.discharges)
+          / nullif(sum(s.discharges) FILTER (WHERE s.median_charge > 0), 0), 2)
+                                                                  AS median_charge,
+    round(sum(s.median_cost * s.discharges)
+          / nullif(sum(s.discharges) FILTER (WHERE s.median_cost > 0), 0), 2)
+                                                                  AS median_cost
+FROM stg_sparcs_cost s
+JOIN latest l ON l.pfi_number = s.pfi_number AND l.data_year = s.data_year
+GROUP BY s.pfi_number, l.data_year;
+
+ALTER TABLE facility_cost_sparcs ADD PRIMARY KEY (pfi_number);
+
+
+-- =============================================================================
 -- STEP 2: Market benchmark
 --
 -- Median of the FACILITY-level medians, not of all raw price lines. Taking the
@@ -132,21 +167,36 @@ SET facility_procedure_cost = coalesce(median_negotiated_charge, median_cash_pri
 -- outvote one that publishes 3, so the "market median" drifts toward whichever
 -- facilities happen to have the most verbose MRFs.
 -- =============================================================================
+-- One benchmark PER COST BASIS. A published list charge runs two to four times
+-- a negotiated rate for the same procedure, so pooling them into a single
+-- "market median" would make every MRF-priced hospital look like a bargain and
+-- every charge-priced one look extortionate -- an artefact of which source the
+-- figure came from, not of what anyone pays. Each facility is therefore
+-- compared against the median of facilities measured the same way.
 DROP TABLE IF EXISTS market_benchmark CASCADE;
 
 CREATE TABLE market_benchmark AS
+WITH all_costs AS (
+    SELECT 'mrf_negotiated'::text AS cost_basis, facility_procedure_cost AS cost
+    FROM facility_pricing
+    WHERE facility_procedure_cost > 0
+    UNION ALL
+    SELECT 'sparcs_charge', median_charge
+    FROM facility_cost_sparcs
+    WHERE median_charge > 0
+)
 SELECT
+    cost_basis,
     count(*)                                                    AS facilities_priced,
-    (percentile_cont(0.5) WITHIN GROUP (
-        ORDER BY facility_procedure_cost))::numeric(14,2)        AS market_median_cost,
-    (percentile_cont(0.25) WITHIN GROUP (
-        ORDER BY facility_procedure_cost))::numeric(14,2)        AS market_p25_cost,
-    (percentile_cont(0.75) WITHIN GROUP (
-        ORDER BY facility_procedure_cost))::numeric(14,2)        AS market_p75_cost,
-    min(facility_procedure_cost)                                AS market_min_cost,
-    max(facility_procedure_cost)                                AS market_max_cost
-FROM facility_pricing
-WHERE facility_procedure_cost > 0;
+    (percentile_cont(0.5)  WITHIN GROUP (ORDER BY cost))::numeric(14,2) AS market_median_cost,
+    (percentile_cont(0.25) WITHIN GROUP (ORDER BY cost))::numeric(14,2) AS market_p25_cost,
+    (percentile_cont(0.75) WITHIN GROUP (ORDER BY cost))::numeric(14,2) AS market_p75_cost,
+    min(cost)::numeric(14,2)                                    AS market_min_cost,
+    max(cost)::numeric(14,2)                                    AS market_max_cost
+FROM all_costs
+GROUP BY cost_basis;
+
+ALTER TABLE market_benchmark ADD PRIMARY KEY (cost_basis);
 
 
 -- =============================================================================
@@ -175,22 +225,40 @@ WITH mapped AS (
     -- year is loaded.
     LEFT JOIN facility_crosswalk x ON x.pfi_number = c.pfi_number
 ),
-priced AS (
+joined AS (
     SELECT
         m.*,
         p.median_cash_price,
         p.median_negotiated_charge,
         p.min_negotiated_charge,
         p.max_negotiated_charge,
-        p.facility_procedure_cost,
-        p.cost_basis,
+        p.facility_procedure_cost   AS mrf_cost,
+        p.cost_basis                AS mrf_cost_basis,
         p.pricing_code_system,
         p.payer_count,
         p.negotiated_line_count,
-        p.cms_certification_number
+        p.cms_certification_number,
+        sc.median_charge            AS sparcs_median_charge,
+        sc.median_cost              AS sparcs_median_cost,
+        sc.data_year                AS sparcs_cost_year
     FROM mapped m
     LEFT JOIN facility_pricing p
            ON lower(btrim(p.facility_name)) = lower(btrim(m.cms_facility_name))
+    LEFT JOIN facility_cost_sparcs sc ON sc.pfi_number = m.pfi_number
+),
+priced AS (
+    -- A negotiated rate is what a payer actually pays, so it wins wherever it
+    -- exists. The SPARCS list charge is the documented fallback, and the basis
+    -- is carried through so nothing downstream compares the two directly.
+    SELECT
+        j.*,
+        coalesce(j.mrf_cost, j.sparcs_median_charge)  AS facility_procedure_cost,
+        CASE
+            WHEN j.mrf_cost IS NOT NULL             THEN 'mrf_negotiated'
+            WHEN j.sparcs_median_charge IS NOT NULL THEN 'sparcs_charge'
+            ELSE NULL
+        END                                          AS cost_basis
+    FROM joined j
 )
 SELECT
     pr.pfi_number,
@@ -239,10 +307,17 @@ SELECT
     -- still, turning single-case facilities into NULL rather than a low score.
     round(ln(1 + pr.patient_volume::numeric), 4)                    AS experience_modifier,
 
+    -- Each term carries a configurable exponent. With all three at 1.0 this is
+    -- the plain product the plan specifies. Raising weight_clinical makes
+    -- quality dominate; the first live run showed a facility with an O/E of
+    -- 1.59 -- 59% worse length of stay than its case mix predicts -- placing
+    -- second purely on price, which is a defensible formula producing an
+    -- indefensible ranking.
     round(
-        (1.0 / nullif(pr.clinical_oe, 0))
-        * (mb.market_median_cost / nullif(pr.facility_procedure_cost, 0))
-        * ln(1 + pr.patient_volume::numeric)
+        power(1.0 / nullif(pr.clinical_oe, 0), fn_cfg_num('weight_clinical'))
+        * power(mb.market_median_cost / nullif(pr.facility_procedure_cost, 0),
+                fn_cfg_num('weight_financial'))
+        * power(ln(1 + pr.patient_volume::numeric), fn_cfg_num('weight_experience'))
     , 3)                                                            AS value_index,
 
     -- Quality-and-experience score for facilities with no published price, so
@@ -263,8 +338,7 @@ SELECT
     pr.crosswalk_reviewed,
     now()                                                           AS computed_at
 FROM priced pr
--- market_benchmark is an ungrouped aggregate, so it always yields exactly one
--- row; ON TRUE keeps that explicit rather than relying on it.
-LEFT JOIN market_benchmark mb ON TRUE;
+-- Each facility is benchmarked against facilities measured the same way.
+LEFT JOIN market_benchmark mb ON mb.cost_basis = pr.cost_basis;
 
 ALTER TABLE master_orthopedic_market ADD PRIMARY KEY (pfi_number);

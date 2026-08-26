@@ -26,7 +26,7 @@ INSERT INTO pipeline_config (key, value, notes) VALUES
         'Value of hospital_service_area / health_service_area that isolates NYC. Used together with the county list; either match qualifies.'),
     ('apr_drg_codes',       '324,326',
         'APR-DRG 324 = ELECTIVE HIP JOINT REPLACEMENT, 326 = ELECTIVE KNEE JOINT REPLACEMENT. NOT 301/302: those codes do not exist in SPARCS (verified against the 2022 and 2024 releases); 303 is a lumbar fusion. The non-elective counterparts 323/325 are deliberately excluded.'),
-    ('target_apr_drgs',     '324,326',
+    ('target_apr_drgs',     '324,326,301,302',
         'APR-DRG codes to price when a hospital publishes APR-DRG rather than MS-DRG (NYU Langone does). Same cohort as apr_drg_codes on the clinical side. APR-DRG 470 is a DIFFERENT procedure from MS-DRG 470 and the two are never pooled.'),
     ('target_ms_drg',       '470',
         'MS-DRG 470 = major hip/knee arthroplasty WITHOUT MCC (the elective cohort).'),
@@ -40,6 +40,12 @@ INSERT INTO pipeline_config (key, value, notes) VALUES
         'los | composite. composite = geometric mean of the LOS O/E and the adverse-disposition O/E, matching the Data Plan prose that quality means discharging faster AND with fewer adverse dispositions than expected.'),
     ('min_facility_volume', '10',
         'Minimum elective joint-replacement discharges (APR-DRG 324/326) for a facility to be scored, counted across all loaded years.'),
+    ('weight_clinical',     '2.0',
+        'Exponent on the clinical multiplier. Raise above 1 to make risk-adjusted quality dominate price.'),
+    ('weight_financial',    '1.0',
+        'Exponent on the financial multiplier. Lower below 1 to stop a cheap-but-slow hospital outranking a fast one.'),
+    ('weight_experience',   '1.0',
+        'Exponent on the log-volume experience modifier.'),
     ('los_censor_value',    '120',
         'Numeric value substituted for the HIPAA-redacted 120+ length_of_stay bucket.')
 ON CONFLICT (key) DO NOTHING;
@@ -139,6 +145,39 @@ CREATE TABLE IF NOT EXISTS stg_cms_mrf (
 
 CREATE INDEX IF NOT EXISTS ix_stg_cms_mrf_code     ON stg_cms_mrf (billing_code);
 CREATE INDEX IF NOT EXISTS ix_stg_cms_mrf_facility ON stg_cms_mrf (facility_name);
+
+
+-- -----------------------------------------------------------------------------
+-- stg_sparcs_cost -- SPARCS Cost Transparency (Socrata 7dtz-qxmr)
+--
+-- Facility-level median charge and median cost per APR-DRG and severity tier.
+-- Keyed on the PFI, so it joins to the clinical side directly and needs no
+-- entity resolution at all -- unlike the CMS price files, which need a
+-- crosswalk and are blocked or absent at several major systems.
+--
+-- These are NOT negotiated rates. median_charge is list price; median_cost is
+-- the facility's own reported cost from the Institutional Cost Report. Used as
+-- a labelled fallback where no MRF price exists, never silently mixed in.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stg_sparcs_cost (
+    id                              BIGSERIAL PRIMARY KEY,
+    pfi_number                      INTEGER,
+    facility_name                   TEXT,
+    apr_drg_code                    INTEGER,
+    apr_drg_description             TEXT,
+    apr_severity_of_illness_code    SMALLINT,
+    medical_surgical_code           TEXT,
+    discharges                      INTEGER,
+    mean_charge                     NUMERIC(14,2),
+    median_charge                   NUMERIC(14,2),
+    mean_cost                       NUMERIC(14,2),
+    median_cost                     NUMERIC(14,2),
+    data_year                       INTEGER,
+    loaded_at                       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_stg_sparcs_cost_pfi  ON stg_sparcs_cost (pfi_number);
+CREATE INDEX IF NOT EXISTS ix_stg_sparcs_cost_year ON stg_sparcs_cost (data_year);
 
 
 -- -----------------------------------------------------------------------------

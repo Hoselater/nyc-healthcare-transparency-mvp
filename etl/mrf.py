@@ -114,16 +114,38 @@ def classify_code(raw: str | None, declared_type: str | None) -> tuple[str, str]
     return None
 
 
-def is_target_code(raw: str | None, declared_type: str | None) -> tuple[str, str] | None:
-    """True when this code is one the project actually prices."""
+_LEGACY_DESC = re.compile(config.LEGACY_DESCRIPTION_PATTERN, re.I)
+
+
+def is_target_code(
+    raw: str | None,
+    declared_type: str | None,
+    description: str | None = None,
+) -> tuple[str, str] | None:
+    """True when this code is one the project actually prices.
+
+    `description` is only consulted for LEGACY APR numbering. Hospital
+    chargemasters run on different APR-DRG versions, so APR301/302 means hip and
+    knee replacement in one vintage and nothing in another. Requiring the row's
+    own description to confirm the procedure keeps the alias from quietly
+    matching an unrelated code at some hospital on a different version.
+    """
     result = classify_code(raw, declared_type)
     if result is None:
         return None
     system, number = result
+
     if system == MS_DRG and number == config.TARGET_MS_DRG.zfill(3):
         return system, number
-    if system == APR_DRG and number in {c.zfill(3) for c in config.TARGET_APR_DRGS}:
-        return system, number
+
+    if system == APR_DRG:
+        if number in {c.zfill(3) for c in config.TARGET_APR_DRGS}:
+            return system, number
+        if number in {c.zfill(3) for c in config.TARGET_APR_DRGS_LEGACY}:
+            # Legacy numbering: trust it only if the description agrees.
+            if description and _LEGACY_DESC.search(str(description)):
+                return system, number
+            return None
     return None
 
 
@@ -330,7 +352,10 @@ def _code_column_pairs(header: list[str]) -> list[tuple[int, int | None]]:
 
 
 def _matching_code(
-    row: list[str], pairs: list[tuple[int, int | None]], target: str
+    row: list[str],
+    pairs: list[tuple[int, int | None]],
+    target: str,
+    description: str | None = None,
 ) -> tuple[str, str] | None:
     """Find a code cell on this row that is one of the target DRGs.
 
@@ -342,7 +367,7 @@ def _matching_code(
         code_type = (
             row[type_index] if type_index is not None and type_index < len(row) else None
         )
-        hit = is_target_code(row[code_index], code_type)
+        hit = is_target_code(row[code_index], code_type, description)
         if hit:
             system, number = hit
             return number, system
@@ -446,7 +471,8 @@ def parse_csv_mrf(
             log.warning("  stopping at MRF_MAX_ROWS_SCANNED=%s", config.MRF_MAX_ROWS_SCANNED)
             break
 
-        match = _matching_code(row, pairs, target_drg)
+        row_description = _cell(row, idx_description)
+        match = _matching_code(row, pairs, target_drg, row_description)
         if match is None:
             continue
         billing_code, billing_code_type = match
@@ -456,7 +482,7 @@ def parse_csv_mrf(
             "cms_certification_number": ccn,
             "billing_code": billing_code,
             "billing_code_type": billing_code_type,
-            "description": _cell(row, idx_description),
+            "description": row_description,
             "setting": _cell(row, idx_setting),
             "gross_charge": clean_currency(_cell(row, idx_gross)),
             "discounted_cash_price": clean_currency(_cell(row, idx_cash)),
@@ -516,7 +542,8 @@ def parse_json_mrf(
         codes = item.get("code_information") or []
         matched = None
         for entry in codes:
-            hit = is_target_code(entry.get("code"), entry.get("type"))
+            hit = is_target_code(entry.get("code"), entry.get("type"),
+                                 item.get("description"))
             if hit:
                 system, number = hit
                 matched = (number, system)

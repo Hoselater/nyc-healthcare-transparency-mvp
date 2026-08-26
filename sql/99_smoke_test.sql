@@ -32,6 +32,13 @@ UPDATE pipeline_config SET value = '3' WHERE key = 'min_facility_volume';
 -- composite metric is asserted separately, in assertion 14.
 UPDATE pipeline_config SET value = 'los' WHERE key = 'clinical_oe_metric';
 
+-- Pin the term weights to 1.0 for the same reason: the arithmetic in assertion
+-- 10 is the plain unweighted product. Production ships weight_clinical = 2.0,
+-- which is a scoring policy choice, not a correctness property, so the test
+-- should not move every time that policy is retuned.
+UPDATE pipeline_config SET value = '1.0'
+ WHERE key IN ('weight_clinical', 'weight_financial', 'weight_experience');
+
 \echo '--- seeding synthetic SPARCS ----------------------------------------'
 
 -- Facility A (Manhattan): 4 elective discharges.
@@ -274,8 +281,15 @@ BEGIN
 
     -- 8. Market median over FACILITY medians: median(30000, 60000) = 45000.
     --    Over raw price lines it would be 32000 -- asserts the de-weighting.
-    SELECT market_median_cost INTO v_num FROM market_benchmark;
+    --    Scoped to the MRF basis: list charges and negotiated rates are
+    --    benchmarked separately and must never share a median.
+    SELECT market_median_cost INTO v_num FROM market_benchmark
+        WHERE cost_basis = 'mrf_negotiated';
     ASSERT v_num = 45000.00, format('market_median: expected 45000, got %s', v_num);
+
+    -- 8b. With no SPARCS cost rows loaded, there is exactly one basis.
+    SELECT count(*) INTO v_int FROM market_benchmark;
+    ASSERT v_int = 1, format('benchmark_basis: expected 1 basis row, got %s', v_int);
 
     -- 9. No fan-out. Original bug: pricing keyed on (facility, billing_code)
     --    joined on facility alone, multiplying rows.

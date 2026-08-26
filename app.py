@@ -41,9 +41,22 @@ def _database_url() -> str | None:
     return os.getenv("DATABASE_URL")
 
 
+def _snapshot_version() -> float:
+    """Modification time of the snapshot, used as a cache key.
+
+    Without this the cache serves whatever it loaded up to an hour ago, so a
+    freshly published snapshot silently does not appear. Keying on mtime means
+    republishing the data invalidates the cache immediately and exactly.
+    """
+    try:
+        return SNAPSHOT_CSV.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 @st.cache_data(ttl=3600, show_spinner="Loading scored facilities...")
-def load_scores() -> tuple[pd.DataFrame, str]:
-    """Return (dataframe, source_label)."""
+def _load_scores(_version: float) -> tuple[pd.DataFrame, str]:
+    """Return (dataframe, source_label). `_version` only busts the cache."""
     url = _database_url()
     if url:
         try:
@@ -98,6 +111,10 @@ def count(value) -> str:
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
+def load_scores() -> tuple[pd.DataFrame, str]:
+    return _load_scores(_snapshot_version())
+
+
 scores, source = load_scores()
 
 st.title("🦴 NYC Orthopedic Value Index")
@@ -225,6 +242,7 @@ if plot_columns.issubset(view.columns):
                 key: fmt
                 for key, fmt in {
                     "borough": True,
+                    "cost_basis": True,
                     "patient_volume": ":,",
                     "observed_avg_los": ":.2f",
                     "expected_avg_los": ":.2f",
@@ -242,15 +260,30 @@ if plot_columns.issubset(view.columns):
             },
             size_max=45,
         )
-        if "market_median_cost" in plot_data:
-            median_cost = plot_data["market_median_cost"].dropna()
-            if not median_cost.empty:
+        # One line per cost basis. Negotiated rates and list charges have
+        # different medians ($37k vs $53k), so a single line would be wrong for
+        # roughly half the points on the chart.
+        if {"market_median_cost", "cost_basis"}.issubset(plot_data.columns):
+            labels = {
+                "mrf_negotiated": "median negotiated rate",
+                "sparcs_charge": "median list charge",
+            }
+            for basis, group in plot_data.groupby("cost_basis"):
+                median_cost = group["market_median_cost"].dropna()
+                if median_cost.empty:
+                    continue
                 figure.add_hline(
                     y=float(median_cost.iloc[0]),
                     line_dash="dash",
                     line_color="gray",
-                    annotation_text="market median",
+                    annotation_text=labels.get(str(basis), str(basis)),
+                    annotation_font_size=10,
                 )
+        elif "market_median_cost" in plot_data:
+            median_cost = plot_data["market_median_cost"].dropna()
+            if not median_cost.empty:
+                figure.add_hline(y=float(median_cost.iloc[0]), line_dash="dash",
+                                 line_color="gray", annotation_text="market median")
         figure.add_vline(x=1.0, line_dash="dash", line_color="gray",
                          annotation_text="as expected")
         figure.update_layout(height=520, margin=dict(t=20, b=20))

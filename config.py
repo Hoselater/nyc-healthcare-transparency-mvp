@@ -143,6 +143,59 @@ TARGET_APR_DRGS = tuple(
     c.strip() for c in os.getenv("TARGET_APR_DRGS", "324,326").split(",") if c.strip()
 )
 
+# Legacy APR-DRG numbering. Hospital chargemasters are not all on the same
+# APR-DRG version as SPARCS. NYU Langone's file codes hip and knee replacement
+# as APR301 and APR302 -- verified from their own description column:
+#
+#     APR301-1  HIP JOINT REPLACEMENT      negotiated $22,288 - $64,634
+#     APR302-1  KNEE JOINT REPLACEMENT     negotiated $21,547 - $62,486
+#
+# That is the numbering the project's original planning documents cited, and it
+# is correct for the older APR-DRG version -- SPARCS simply moved to v38, where
+# the same procedures became 323-326. Both vintages are therefore accepted on
+# the PRICING side.
+#
+# Because a bare number is weak evidence across versions, legacy codes are only
+# accepted when the row's own description confirms the procedure. See
+# LEGACY_DESCRIPTION_PATTERN below.
+TARGET_APR_DRGS_LEGACY = tuple(
+    c.strip()
+    for c in os.getenv("TARGET_APR_DRGS_LEGACY", "301,302").split(",")
+    if c.strip()
+)
+
+# A legacy-coded row must describe a joint replacement to be trusted.
+LEGACY_DESCRIPTION_PATTERN = os.getenv(
+    "LEGACY_DESCRIPTION_PATTERN",
+    r"(joint\s+replacement|arthroplasty|(hip|knee)\s+replacement)",
+)
+
+# SPARCS Cost Transparency: facility-level median charge and median cost per
+# APR-DRG and severity tier, back to 2009, keyed on PFI.
+#
+# Strategically this is the most valuable free source in the project. It needs
+# no crawling, no entity resolution (the PFI is the join key the pipeline
+# already uses), and it covers EVERY Article 28 facility -- where CMS price-file
+# crawling reaches maybe a quarter of them and is blocked outright at several.
+#
+# It measures something different from a negotiated rate, and that distinction
+# must never be blurred:
+#   * median_charge -- the hospital's list price. Almost nobody pays this.
+#   * median_cost   -- the hospital's own reported cost of delivering care,
+#                      from the Institutional Cost Report.
+#   * CMS MRF       -- what a specific payer actually negotiated.
+# The MRF figure is the one a patient's liability derives from, so it stays the
+# primary basis; these fill the gaps and are labelled as such in the output.
+SPARCS_COST_DATASET_ID = os.getenv("SPARCS_COST_DATASET_ID", "7dtz-qxmr")
+
+# The cost file spans years using two APR-DRG vintages, so both are accepted and
+# the description is required to confirm the procedure.
+SPARCS_COST_DRGS = tuple(
+    c.strip()
+    for c in os.getenv("SPARCS_COST_DRGS", "301,302,324,326").split(",")
+    if c.strip()
+)
+
 SOCRATA_PAGE_SIZE = int(os.getenv("SOCRATA_PAGE_SIZE", "50000"))
 SOCRATA_MAX_RECORDS = int(os.getenv("SOCRATA_MAX_RECORDS", "0"))  # 0 = no cap
 
@@ -188,5 +241,5 @@ MRF_MAX_ROWS_SCANNED = int(os.getenv("MRF_MAX_ROWS_SCANNED", "0"))  # 0 = unlimi
 # Below this rapidfuzz score a suggested pairing is not written to the
 # crosswalk at all. Between this and FUZZY_AUTO_ACCEPT it is written with
 # reviewed = FALSE and must be confirmed by a human.
-FUZZY_MIN_SCORE = float(os.getenv("FUZZY_MIN_SCORE", "80"))
-FUZZY_AUTO_ACCEPT = float(os.getenv("FUZZY_AUTO_ACCEPT", "97"))
+FUZZY_MIN_SCORE = float(os.getenv("FUZZY_MIN_SCORE", "60"))
+FUZZY_AUTO_ACCEPT = float(os.getenv("FUZZY_AUTO_ACCEPT", "95"))

@@ -63,6 +63,11 @@ def cmd_mrf(args) -> None:
     mrf.ingest_all(locations, truncate_first=not args.append)
 
 
+def cmd_cost(_args) -> None:
+    from etl import sparcs_cost
+    sparcs_cost.fetch_cost_data()
+
+
 def cmd_transform(_args) -> None:
     from etl import db
     db.run_sql_file(config.SQL_DIR / "02_transformations.sql")
@@ -96,6 +101,7 @@ def cmd_all(args) -> None:
     cmd_schema(args)
     cmd_sparcs(args)
     cmd_mrf(args)
+    cmd_cost(args)
     cmd_transform(args)
     cmd_crosswalk(args)
     cmd_score(args)
@@ -125,6 +131,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_mrf = sub.add_parser("mrf", help="crawl cms-hpt.txt and load MRF pricing")
     p_mrf.add_argument("--append", action="store_true")
     p_mrf.set_defaults(func=cmd_mrf)
+
+    sub.add_parser(
+        "cost", help="load SPARCS Cost Transparency (facility median charge/cost)"
+    ).set_defaults(func=cmd_cost)
 
     sub.add_parser("transform", help="run 02_transformations.sql").set_defaults(
         func=cmd_transform
