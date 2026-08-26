@@ -19,6 +19,7 @@ import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SNAPSHOT_CSV = PROJECT_ROOT / "data" / "nyc_ortho_scores_public.csv"
+PROCEDURE_CSV = PROJECT_ROOT / "data" / "nyc_ortho_scores_by_procedure.csv"
 
 st.set_page_config(
     page_title="NYC Orthopedic Value Index",
@@ -111,11 +112,58 @@ def count(value) -> str:
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_procedures(_version: float) -> pd.DataFrame:
+    url = _database_url()
+    if url:
+        try:
+            from sqlalchemy import create_engine
+
+            frame = pd.read_sql(
+                "SELECT * FROM vw_procedure_scores", create_engine(url, pool_pre_ping=True)
+            )
+            if not frame.empty:
+                return frame
+        except Exception:  # noqa: BLE001 - fall through to the snapshot
+            pass
+    if PROCEDURE_CSV.exists():
+        return pd.read_csv(PROCEDURE_CSV)
+    return pd.DataFrame()
+
+
 def load_scores() -> tuple[pd.DataFrame, str]:
     return _load_scores(_snapshot_version())
 
 
-scores, source = load_scores()
+combined, source = load_scores()
+try:
+    procedures = _load_procedures(PROCEDURE_CSV.stat().st_mtime)
+except OSError:
+    procedures = pd.DataFrame()
+
+# --- Procedure selector ----------------------------------------------------
+# Hip and knee are different operations with different recovery profiles, and a
+# hospital can be good at one and mediocre at the other. Defaulting to the
+# combined view keeps the front page simple; choosing a procedure switches to
+# metrics computed for that procedure alone, benchmarked against its own market.
+PROCEDURE_CHOICES = {"Hip & knee (combined)": None, "Hip replacement": "hip",
+                     "Knee replacement": "knee"}
+
+st.sidebar.header("Procedure")
+if procedures.empty:
+    chosen_procedure = None
+    st.sidebar.caption("Per-procedure data not published yet.")
+else:
+    chosen_procedure = PROCEDURE_CHOICES[
+        st.sidebar.radio("Which operation?", list(PROCEDURE_CHOICES),
+                         label_visibility="collapsed")
+    ]
+
+if chosen_procedure and not procedures.empty:
+    scores = procedures[procedures["procedure"] == chosen_procedure].copy()
+    source = f"{source} · {chosen_procedure} only"
+else:
+    scores = combined
 
 st.title("🦴 NYC Orthopedic Value Index")
 st.caption(
@@ -307,7 +355,8 @@ display_columns = {
     "facility_procedure_cost": "Cost",
     "pct_vs_market_median": "vs. market",
     "oe_ratio_los": "LOS O/E",
-    "observed_adverse_pct": "Adverse disch. %",
+    "cms_complication_rate": "Complication %",
+    "cms_readmission_rate": "Readmission %",
     "patient_volume": "Volume",
 }
 present = {k: v for k, v in display_columns.items() if k in table.columns}
@@ -321,7 +370,16 @@ st.dataframe(
         "vs. market": st.column_config.NumberColumn(format="%.1f%%"),
         "Value Index": st.column_config.NumberColumn(format="%.3f"),
         "LOS O/E": st.column_config.NumberColumn(format="%.3f"),
-        "Adverse disch. %": st.column_config.NumberColumn(format="%.1f%%"),
+        "Complication %": st.column_config.NumberColumn(
+            format="%.1f%%",
+            help="CMS risk-standardised complication rate for elective hip/knee "
+                 "replacement. A real outcome, not a proxy. Lower is better.",
+        ),
+        "Readmission %": st.column_config.NumberColumn(
+            format="%.1f%%",
+            help="CMS 30-day unplanned readmission rate after hip/knee "
+                 "replacement. Lower is better.",
+        ),
         "Volume": st.column_config.NumberColumn(format="%d"),
     },
 )
@@ -358,6 +416,17 @@ with d3:
     st.metric("Hip / knee",
               f"{count(row.get('hip_volume'))} / {count(row.get('knee_volume'))}")
     st.metric("Value Index", num(row.get("value_index"), ".3f"))
+
+if pd.notna(row.get("cms_complication_rate")):
+    st.markdown("**Actual outcomes** — CMS Care Compare, not a proxy")
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Complication rate", num(row.get("cms_complication_rate"), ".1f", "%"),
+              help="Risk-standardised, for elective hip/knee replacement.")
+    q1.caption(str(row.get("cms_complication_vs_national") or ""))
+    q2.metric("30-day readmission", num(row.get("cms_readmission_rate"), ".1f", "%"))
+    q2.caption(str(row.get("cms_readmission_vs_national") or ""))
+    q3.metric("CMS overall rating", stars(row.get("cms_overall_rating")),
+              help="CMS's own hospital-wide star rating, across all services.")
 
 if row.get("cost_basis") == "median_cash_price":
     st.info(

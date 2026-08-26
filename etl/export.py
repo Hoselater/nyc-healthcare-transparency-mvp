@@ -53,8 +53,26 @@ def export_scores(path: str | Path | None = None, include_incomplete: bool = Fal
     return target
 
 
-# The one export path that is committed to git and read by the public web app.
+# The export paths committed to git and read by the public web app.
 PUBLIC_SNAPSHOT = config.DATA_DIR / "nyc_ortho_scores_public.csv"
+PROCEDURE_SNAPSHOT = config.DATA_DIR / "nyc_ortho_scores_by_procedure.csv"
+
+
+def _dump(view: str, target: Path, order: str = "") -> int:
+    raw = db.get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            cur.execute(f"SELECT * FROM {view}{order}")
+            columns = [d[0] for d in cur.description]
+            rows = cur.fetchall()
+    finally:
+        raw.close()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with open(target, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(columns)
+        writer.writerows(rows)
+    return len(rows)
 
 
 def publish_snapshot() -> Path:
@@ -66,9 +84,20 @@ def publish_snapshot() -> Path:
     inactivity.
     """
     target = export_scores(PUBLIC_SNAPSHOT)
+
+    # Per-procedure scores, so the app can answer "how good is this hospital at
+    # MY operation" rather than only at joint replacement in aggregate.
+    try:
+        count = _dump(
+            "vw_procedure_scores", PROCEDURE_SNAPSHOT,
+            " ORDER BY procedure, value_index DESC",
+        )
+        log.info("Published %s per-procedure rows to %s", count, PROCEDURE_SNAPSHOT.name)
+    except Exception as exc:  # noqa: BLE001 - the combined snapshot is the critical one
+        log.warning("Per-procedure snapshot skipped: %s", exc)
+
     log.info(
         "Published snapshot. Commit it so the deployed app picks it up:\n"
-        "    git add %s && git commit -m 'Update scored snapshot'",
-        target.relative_to(config.PROJECT_ROOT),
+        "    git add data/ && git commit -m 'Update scored snapshot'",
     )
     return target

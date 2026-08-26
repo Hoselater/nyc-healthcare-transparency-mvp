@@ -342,3 +342,152 @@ FROM priced pr
 LEFT JOIN market_benchmark mb ON mb.cost_basis = pr.cost_basis;
 
 ALTER TABLE master_orthopedic_market ADD PRIMARY KEY (pfi_number);
+
+
+-- =============================================================================
+-- STEP 4: PER-PROCEDURE pricing and scoring
+--
+-- A patient having a knee replaced does not care about the hip average. The
+-- clinical side separates cleanly -- APR-DRG 324 and 326 are distinct codes.
+--
+-- Pricing separates only PARTLY, and the reason is worth stating plainly:
+-- MS-DRG 470 is defined as "major hip OR knee joint replacement", one code for
+-- both procedures, so a hospital pricing on MS-DRG has no hip/knee split to
+-- give. APR-coded sources -- SPARCS Cost Transparency, and the hospitals whose
+-- MRFs use APR-DRG -- do separate them. Each facility therefore carries the
+-- most specific price available, labelled so the difference is visible rather
+-- than implied.
+-- =============================================================================
+DROP TABLE IF EXISTS procedure_pricing CASCADE;
+
+CREATE TABLE procedure_pricing AS
+WITH drg_to_procedure(code, procedure) AS (
+    VALUES ('324','hip'), ('301','hip'), ('326','knee'), ('302','knee')
+),
+-- (a) MRF rows carrying a procedure-specific APR code
+mrf_proc AS (
+    SELECT
+        x.pfi_number,
+        d.procedure,
+        (percentile_cont(0.5) WITHIN GROUP (
+            ORDER BY CASE WHEN m.payer_specific_negotiated_charge > 0
+                          THEN m.payer_specific_negotiated_charge END))::numeric(14,2)
+            AS cost
+    FROM stg_cms_mrf m
+    JOIN drg_to_procedure d
+      ON d.code = m.billing_code AND m.billing_code_type = 'APR-DRG'
+    JOIN facility_crosswalk x
+      ON lower(btrim(x.cms_facility_name)) = lower(btrim(m.facility_name))
+    WHERE (m.setting IS NULL OR btrim(m.setting) = '' OR m.setting ~* 'inpatient')
+    GROUP BY x.pfi_number, d.procedure
+),
+-- (b) SPARCS Cost Transparency, which always carries the procedure code
+sparcs_proc AS (
+    SELECT
+        s.pfi_number,
+        d.procedure,
+        round(sum(s.median_charge * s.discharges)
+              / nullif(sum(s.discharges) FILTER (WHERE s.median_charge > 0), 0), 2)
+            AS cost
+    FROM stg_sparcs_cost s
+    JOIN drg_to_procedure d ON d.code = lpad(s.apr_drg_code::text, 3, '0')
+    JOIN (SELECT pfi_number, max(data_year) y FROM stg_sparcs_cost GROUP BY 1) l
+      ON l.pfi_number = s.pfi_number AND l.y = s.data_year
+    GROUP BY s.pfi_number, d.procedure
+)
+SELECT
+    coalesce(mp.pfi_number, sp.pfi_number)        AS pfi_number,
+    coalesce(mp.procedure,  sp.procedure)         AS procedure,
+    coalesce(mp.cost,       sp.cost)              AS procedure_cost,
+    CASE WHEN mp.cost IS NOT NULL THEN 'mrf_negotiated'
+         WHEN sp.cost IS NOT NULL THEN 'sparcs_charge' END AS cost_basis
+FROM mrf_proc mp
+FULL OUTER JOIN sparcs_proc sp
+  ON sp.pfi_number = mp.pfi_number AND sp.procedure = mp.procedure;
+
+ALTER TABLE procedure_pricing ADD PRIMARY KEY (pfi_number, procedure);
+
+
+-- Benchmarks per (procedure, basis): a knee list charge must be compared only
+-- against other knee list charges.
+DROP TABLE IF EXISTS procedure_benchmark CASCADE;
+
+CREATE TABLE procedure_benchmark AS
+SELECT
+    procedure,
+    cost_basis,
+    count(*)                                                     AS facilities_priced,
+    (percentile_cont(0.5) WITHIN GROUP (ORDER BY procedure_cost))::numeric(14,2)
+                                                                 AS market_median_cost
+FROM procedure_pricing
+WHERE procedure_cost > 0
+GROUP BY procedure, cost_basis;
+
+ALTER TABLE procedure_benchmark ADD PRIMARY KEY (procedure, cost_basis);
+
+
+DROP TABLE IF EXISTS master_procedure_market CASCADE;
+
+CREATE TABLE master_procedure_market AS
+SELECT
+    m.pfi_number,
+    m.procedure,
+    m.procedure_label,
+    m.facility_name,
+    m.hospital_county,
+    m.primary_zip3,
+    m.patient_volume,
+    m.avg_severity,
+    m.observed_avg_los,
+    m.expected_avg_los,
+    m.oe_ratio_los,
+    m.observed_adverse_pct,
+    m.oe_ratio_adverse,
+    m.clinical_oe,
+    p.procedure_cost,
+    p.cost_basis,
+    b.market_median_cost,
+    round(power(1.0 / nullif(m.clinical_oe, 0), fn_cfg_num('weight_clinical'))
+        * power(b.market_median_cost / nullif(p.procedure_cost, 0),
+                fn_cfg_num('weight_financial'))
+        * power(ln(1 + m.patient_volume::numeric), fn_cfg_num('weight_experience'))
+    , 3)                                                         AS value_index
+FROM facility_procedure_metrics m
+LEFT JOIN procedure_pricing p
+       ON p.pfi_number = m.pfi_number AND p.procedure = m.procedure
+LEFT JOIN procedure_benchmark b
+       ON b.procedure = p.procedure AND b.cost_basis = p.cost_basis;
+
+ALTER TABLE master_procedure_market ADD PRIMARY KEY (pfi_number, procedure);
+
+
+-- =============================================================================
+-- STEP 5: CMS Care Compare outcomes, pivoted to one row per facility
+--
+-- The genuine outcome measures the SPARCS public file does not contain:
+-- risk-standardised complication rate and 30-day readmission rate for elective
+-- hip and knee replacement. These do not feed the Value Index -- they are not
+-- available for every facility, and silently scoring some hospitals on richer
+-- evidence than others would be worse than not using them. They are reported
+-- alongside it, which is what a reader actually needs to judge the index.
+-- =============================================================================
+DROP TABLE IF EXISTS facility_quality CASCADE;
+
+CREATE TABLE facility_quality AS
+SELECT
+    x.pfi_number,
+    x.cms_certification_number,
+    max(q.score) FILTER (WHERE q.measure_id = 'COMP_HIP_KNEE')      AS cms_complication_rate,
+    max(q.compared_to_national) FILTER (WHERE q.measure_id = 'COMP_HIP_KNEE')
+                                                                    AS cms_complication_vs_national,
+    max(q.denominator) FILTER (WHERE q.measure_id = 'COMP_HIP_KNEE') AS cms_complication_cases,
+    max(q.score) FILTER (WHERE q.measure_id = 'READM_30_HIP_KNEE')  AS cms_readmission_rate,
+    max(q.compared_to_national) FILTER (WHERE q.measure_id = 'READM_30_HIP_KNEE')
+                                                                    AS cms_readmission_vs_national,
+    max(q.score) FILTER (WHERE q.measure_id = 'CMS_OVERALL_RATING') AS cms_overall_rating
+FROM facility_ccn_crosswalk x
+JOIN stg_cms_quality q
+  ON q.cms_certification_number = x.cms_certification_number
+GROUP BY x.pfi_number, x.cms_certification_number;
+
+ALTER TABLE facility_quality ADD PRIMARY KEY (pfi_number);

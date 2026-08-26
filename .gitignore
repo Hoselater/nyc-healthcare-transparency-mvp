@@ -16,6 +16,7 @@ exports/
 !data/target_hospitals.csv
 !data/facility_crosswalk_review.csv
 !data/nyc_ortho_scores_public.csv
+!data/nyc_ortho_scores_by_procedure.csv
 
 # ---- Python ---------------------------------------------------------------
 venv/

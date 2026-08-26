@@ -144,8 +144,13 @@ CREATE INDEX ix_ortho_cohort_nyc      ON ortho_cohort (is_nyc);
 -- =============================================================================
 DROP TABLE IF EXISTS severity_benchmarks CASCADE;
 
+-- Also stratified by PROCEDURE. Hip and knee replacement have materially
+-- different length-of-stay profiles, so a single pooled benchmark quietly
+-- penalises hospitals whose orthopedic mix leans toward the slower procedure.
+-- Stratifying costs nothing and makes the risk adjustment strictly better.
 CREATE TABLE severity_benchmarks AS
 SELECT
+    c.apr_drg_code,
     c.severity,
     c.discharge_year,
     count(*)                                                AS benchmark_discharges,
@@ -153,9 +158,10 @@ SELECT
     round(avg(c.adverse_flag::numeric), 6)                  AS expected_adverse_rate
 FROM ortho_cohort c
 WHERE fn_cfg('benchmark_scope') = 'statewide' OR c.is_nyc
-GROUP BY c.severity, c.discharge_year;
+GROUP BY c.apr_drg_code, c.severity, c.discharge_year;
 
-ALTER TABLE severity_benchmarks ADD PRIMARY KEY (severity, discharge_year);
+ALTER TABLE severity_benchmarks
+    ADD PRIMARY KEY (apr_drg_code, severity, discharge_year);
 
 
 -- =============================================================================
@@ -183,7 +189,8 @@ WITH scored AS (
         b.expected_adverse_rate
     FROM ortho_cohort c
     JOIN severity_benchmarks b
-      ON b.severity = c.severity
+      ON b.apr_drg_code   = c.apr_drg_code
+     AND b.severity       = c.severity
      AND b.discharge_year = c.discharge_year
     WHERE c.is_nyc
 ),
@@ -256,6 +263,100 @@ ALTER TABLE facility_clinical_metrics ADD PRIMARY KEY (pfi_number);
 ALTER TABLE facility_clinical_metrics ADD COLUMN clinical_oe NUMERIC(10,3);
 
 UPDATE facility_clinical_metrics
+SET clinical_oe = CASE
+        WHEN fn_cfg('clinical_oe_metric') = 'composite' THEN oe_ratio_composite
+        ELSE oe_ratio_los
+    END;
+
+
+-- =============================================================================
+-- STEP 4: Per-procedure clinical metrics
+--
+-- The combined table above answers "how good is this hospital at joint
+-- replacement". This one answers "how good is it at MY operation", which is the
+-- question a patient actually has. Hip and knee are different procedures with
+-- different recovery profiles, and a hospital can be strong at one and weak at
+-- the other -- information the combined figure averages away entirely.
+--
+-- Grouped by (PFI, APR-DRG). 324 = elective hip, 326 = elective knee.
+-- =============================================================================
+DROP TABLE IF EXISTS facility_procedure_metrics CASCADE;
+
+CREATE TABLE facility_procedure_metrics AS
+WITH scored AS (
+    SELECT c.*, b.expected_los, b.expected_adverse_rate
+    FROM ortho_cohort c
+    JOIN severity_benchmarks b
+      ON b.apr_drg_code   = c.apr_drg_code
+     AND b.severity       = c.severity
+     AND b.discharge_year = c.discharge_year
+    WHERE c.is_nyc
+),
+agg AS (
+    SELECT
+        s.permanent_facility_id                                 AS pfi_number,
+        s.apr_drg_code,
+        (array_agg(s.facility_name
+                   ORDER BY s.discharge_year DESC, s.facility_name))[1]
+                                                                AS facility_name,
+        mode() WITHIN GROUP (ORDER BY s.hospital_county)        AS hospital_county,
+        mode() WITHIN GROUP (ORDER BY s.zip3)                   AS primary_zip3,
+        min(s.discharge_year)                                   AS first_discharge_year,
+        max(s.discharge_year)                                   AS last_discharge_year,
+        count(*)                                                AS patient_volume,
+        round(avg(s.severity::numeric), 3)                      AS avg_severity,
+        avg(s.los_days)                                         AS observed_los,
+        avg(s.expected_los)                                     AS expected_los,
+        avg(s.adverse_flag::numeric)                            AS observed_adverse,
+        avg(s.expected_adverse_rate)                            AS expected_adverse
+    FROM scored s
+    GROUP BY s.permanent_facility_id, s.apr_drg_code
+)
+SELECT
+    a.pfi_number,
+    a.apr_drg_code,
+    CASE a.apr_drg_code
+        WHEN 324 THEN 'hip'
+        WHEN 326 THEN 'knee'
+        ELSE 'other'
+    END                                                             AS procedure,
+    CASE a.apr_drg_code
+        WHEN 324 THEN 'Hip replacement'
+        WHEN 326 THEN 'Knee replacement'
+        ELSE 'Other'
+    END                                                             AS procedure_label,
+    a.facility_name,
+    a.hospital_county,
+    a.primary_zip3,
+    a.first_discharge_year,
+    a.last_discharge_year,
+    a.patient_volume,
+    a.avg_severity,
+    round(a.observed_los, 2)                                        AS observed_avg_los,
+    round(a.expected_los, 2)                                        AS expected_avg_los,
+    round(a.observed_los / nullif(a.expected_los, 0), 3)            AS oe_ratio_los,
+    round(a.observed_adverse * 100, 2)                              AS observed_adverse_pct,
+    round(a.expected_adverse * 100, 2)                              AS expected_adverse_pct,
+    round(a.observed_adverse / nullif(a.expected_adverse, 0), 3)    AS oe_ratio_adverse,
+    CASE
+        WHEN a.expected_los IS NULL OR a.expected_los = 0 THEN NULL
+        WHEN a.observed_adverse IS NULL OR a.expected_adverse IS NULL
+          OR a.expected_adverse = 0 OR a.observed_adverse = 0
+            THEN round(a.observed_los / nullif(a.expected_los, 0), 3)
+        ELSE round(sqrt((a.observed_los / a.expected_los)
+                      * (a.observed_adverse / a.expected_adverse))::numeric, 3)
+    END                                                             AS oe_ratio_composite
+FROM agg a
+-- A lower floor than the combined table: splitting one facility's volume across
+-- two procedures roughly halves each, and the production floor of 10 would drop
+-- facilities that are perfectly adequately measured on the combined view.
+WHERE a.patient_volume >= greatest(fn_cfg_num('min_facility_volume') / 2, 5);
+
+ALTER TABLE facility_procedure_metrics ADD PRIMARY KEY (pfi_number, apr_drg_code);
+
+ALTER TABLE facility_procedure_metrics ADD COLUMN clinical_oe NUMERIC(10,3);
+
+UPDATE facility_procedure_metrics
 SET clinical_oe = CASE
         WHEN fn_cfg('clinical_oe_metric') = 'composite' THEN oe_ratio_composite
         ELSE oe_ratio_los

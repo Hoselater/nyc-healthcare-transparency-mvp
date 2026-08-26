@@ -102,6 +102,15 @@ def parse_cms_hpt(text: str, base_url: str, system_name: str) -> list[MrfLocatio
     return locations
 
 
+_TLS_EXEMPT: set[str] = set()
+
+
+def _tls_exempt(domain: str) -> bool:
+    """Hosts explicitly allow-listed for unverified TLS in the target CSV."""
+    host = urlparse(domain if urlparse(domain).scheme else f"https://{domain}").hostname or domain
+    return host.lower().lstrip("www.") in _TLS_EXEMPT or host.lower() in _TLS_EXEMPT
+
+
 def discover(domain: str, system_name: str) -> list[MrfLocation]:
     """Fetch and parse `<domain>/cms-hpt.txt`."""
     base = domain if urlparse(domain).scheme else f"https://{domain}"
@@ -117,6 +126,29 @@ def discover(domain: str, system_name: str) -> list[MrfLocation]:
             allow_redirects=True,
         )
         response.raise_for_status()
+    except requests.exceptions.SSLError as exc:
+        # Some hospitals let their certificate expire (Montefiore) or serve one
+        # for the wrong hostname (SUNY Downstate). The file itself is a public
+        # regulatory disclosure containing no secrets, so retrying without
+        # verification is defensible -- but only when explicitly opted in per
+        # host, and it is logged loudly because it does drop authentication of
+        # the server's identity.
+        if not _tls_exempt(domain):
+            log.warning("  TLS failure for %s (%s). Set allow_insecure_tls=yes in "
+                        "%s to fetch anyway.", system_name,
+                        str(exc)[:80], config.TARGET_HOSPITALS_CSV.name)
+            return []
+        log.warning("  INSECURE: %s has a bad certificate; fetching unverified "
+                    "because it is explicitly allow-listed.", system_name)
+        try:
+            response = requests.get(
+                txt_url, headers=config.HTTP_HEADERS, timeout=config.HTTP_TIMEOUT,
+                allow_redirects=True, verify=False,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc2:
+            log.warning("  still failed for %s: %s", system_name, str(exc2)[:120])
+            return []
     except requests.RequestException as exc:
         log.warning("  no cms-hpt.txt for %s: %s", system_name, exc)
         return []
@@ -158,6 +190,15 @@ def discover_all(targets: list[dict] | None = None) -> list[MrfLocation]:
     """Resolve every target to zero or more MRF locations."""
     targets = targets if targets is not None else load_targets()
     found: list[MrfLocation] = []
+
+    _TLS_EXEMPT.clear()
+    for t in targets:
+        if str(t.get("allow_insecure_tls", "")).strip().lower() in ("yes", "true", "1"):
+            dom = (t.get("domain") or "").strip().lower()
+            if dom:
+                _TLS_EXEMPT.add(dom.lstrip("www."))
+    if _TLS_EXEMPT:
+        log.warning("Unverified TLS allow-listed for: %s", ", ".join(sorted(_TLS_EXEMPT)))
 
     for index, target in enumerate(targets):
         if index:

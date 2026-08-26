@@ -368,3 +368,105 @@ def import_reviewed(path: str | Path = REVIEW_CSV) -> int:
 
     log.info("Imported %s crosswalk rows from %s", count, path)
     return count
+
+
+# ---------------------------------------------------------------------------
+# CCN crosswalk: SPARCS facilities <-> CMS Care Compare
+# ---------------------------------------------------------------------------
+def build_ccn(min_score: float = 82.0) -> int:
+    """Match scored NYC facilities to their CMS Certification Number.
+
+    Easier than the MRF crosswalk: both sides use official regulatory naming,
+    so exact and near-exact matches dominate. A higher threshold is used here
+    precisely because the names are cleaner -- a loose match would be a sign of
+    something wrong, not of a name variant.
+    """
+    sparcs = _fetch_sparcs_facilities()
+    if not sparcs:
+        raise RuntimeError("No scored facilities. Run transform first.")
+
+    raw = db.get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT cms_certification_number, facility_name, citytown
+                FROM stg_cms_quality
+                WHERE cms_certification_number <> ''
+                """
+            )
+            cms = cur.fetchall()
+    finally:
+        raw.close()
+
+    if not cms:
+        raise RuntimeError("stg_cms_quality is empty. Run `cost`/`quality` first.")
+
+    by_norm: dict[str, tuple[str, str]] = {}
+    for ccn, name, city in cms:
+        by_norm.setdefault(normalize_name(name), (ccn, name))
+
+    choices = list(by_norm)
+    claimed: set[str] = set()
+    matched = 0
+    rows: list[tuple] = []
+
+    for facility in sparcs:
+        norm = normalize_name(facility["name"])
+        tokens = significant_tokens(norm)
+        if not norm:
+            continue
+
+        pick = None
+        score = None
+        if norm in by_norm and by_norm[norm][0] not in claimed:
+            pick, score = by_norm[norm], 100.0
+        else:
+            available = [
+                c for c in choices
+                if by_norm[c][0] not in claimed and tokens & significant_tokens(c)
+            ]
+            if available:
+                best = process.extractOne(
+                    norm, available, scorer=fuzz.token_set_ratio, score_cutoff=min_score
+                )
+                if best:
+                    pick, score = by_norm[best[0]], float(best[1])
+
+        if not pick:
+            continue
+        ccn, cms_name = pick
+        claimed.add(ccn)
+        matched += 1
+        rows.append((facility["pfi"], ccn, facility["name"], cms_name,
+                     "exact" if score == 100.0 else "fuzzy", score))
+
+    raw = db.get_engine().raw_connection()
+    try:
+        with raw.cursor() as cur:
+            for r in rows:
+                cur.execute(
+                    """
+                    INSERT INTO facility_ccn_crosswalk
+                        (pfi_number, cms_certification_number, sparcs_facility_name,
+                         cms_facility_name, match_method, match_score, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (pfi_number) DO UPDATE SET
+                        cms_certification_number = EXCLUDED.cms_certification_number,
+                        cms_facility_name        = EXCLUDED.cms_facility_name,
+                        match_method             = EXCLUDED.match_method,
+                        match_score              = EXCLUDED.match_score,
+                        updated_at               = now()
+                    WHERE facility_ccn_crosswalk.reviewed = FALSE
+                    """,
+                    r,
+                )
+        raw.commit()
+    except Exception:
+        raw.rollback()
+        raise
+    finally:
+        raw.close()
+
+    log.info("CCN crosswalk: %s/%s facilities matched to CMS.", matched, len(sparcs))
+    return matched

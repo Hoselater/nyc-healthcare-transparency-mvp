@@ -208,3 +208,53 @@ CREATE TABLE IF NOT EXISTS facility_crosswalk (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_crosswalk_cms_name
     ON facility_crosswalk (lower(btrim(cms_facility_name)))
     WHERE cms_facility_name IS NOT NULL;
+
+
+-- -----------------------------------------------------------------------------
+-- stg_cms_quality -- CMS Care Compare outcome measures
+--
+-- The risk-standardised complication rate (COMP_HIP_KNEE) and 30-day
+-- readmission rate (READM_30_HIP_KNEE) for elective primary hip and knee
+-- arthroplasty, published per hospital by CMS.
+--
+-- These are REAL OUTCOMES, not proxies -- which is exactly what the SPARCS
+-- public file lacks and what the Value Index's biggest limitation has been.
+-- Keyed on the CMS Certification Number, which SPARCS does not carry, so it
+-- reaches the pipeline through facility_ccn_crosswalk.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stg_cms_quality (
+    id                        BIGSERIAL PRIMARY KEY,
+    cms_certification_number  TEXT NOT NULL,
+    facility_name             TEXT,
+    citytown                  TEXT,
+    state                     TEXT,
+    zip_code                  TEXT,
+    countyparish              TEXT,
+    measure_id                TEXT,
+    measure_name              TEXT,
+    score                     NUMERIC(10,3),
+    denominator               NUMERIC(12,1),
+    compared_to_national      TEXT,
+    start_date                TEXT,
+    end_date                  TEXT,
+    loaded_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_stg_cms_quality_ccn     ON stg_cms_quality (cms_certification_number);
+CREATE INDEX IF NOT EXISTS ix_stg_cms_quality_measure ON stg_cms_quality (measure_id);
+
+
+-- CCN <-> PFI resolution, built by matching official facility names within NY.
+CREATE TABLE IF NOT EXISTS facility_ccn_crosswalk (
+    pfi_number                INTEGER PRIMARY KEY,
+    cms_certification_number  TEXT NOT NULL,
+    sparcs_facility_name      TEXT,
+    cms_facility_name         TEXT,
+    match_method              TEXT,
+    match_score               NUMERIC(5,2),
+    reviewed                  BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_ccn_crosswalk_ccn
+    ON facility_ccn_crosswalk (cms_certification_number);

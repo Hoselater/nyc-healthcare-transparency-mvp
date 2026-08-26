@@ -106,8 +106,18 @@ SELECT
     c.value_quintile                AS star_rating,
     c.data_status,
     c.match_method,
-    c.crosswalk_reviewed
-FROM combined c;
+    c.crosswalk_reviewed,
+
+    -- Real outcomes from CMS Care Compare, reported alongside the index rather
+    -- than folded into it: they are missing for some facilities, and scoring
+    -- part of the market on better evidence than the rest would mislead.
+    q.cms_complication_rate,
+    q.cms_complication_vs_national,
+    q.cms_readmission_rate,
+    q.cms_readmission_vs_national,
+    q.cms_overall_rating
+FROM combined c
+LEFT JOIN facility_quality q ON q.pfi_number = c.pfi_number;
 
 
 -- -----------------------------------------------------------------------------
@@ -120,3 +130,50 @@ SELECT *
 FROM vw_facility_scores
 WHERE value_index IS NOT NULL
 ORDER BY value_index DESC;
+
+
+-- -----------------------------------------------------------------------------
+-- vw_procedure_scores -- per-procedure ranking, hip and knee scored separately.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW vw_procedure_scores AS
+WITH ranked AS (
+    SELECT
+        m.*,
+        -- Ranked WITHIN procedure: a knee is only compared against other knees.
+        rank()   OVER (PARTITION BY m.procedure ORDER BY m.value_index DESC) AS value_rank,
+        ntile(5) OVER (PARTITION BY m.procedure ORDER BY m.value_index ASC)  AS star_rating
+    FROM master_procedure_market m
+    WHERE m.value_index IS NOT NULL
+)
+SELECT
+    r.pfi_number,
+    r.facility_name,
+    r.procedure,
+    r.procedure_label,
+    CASE lower(btrim(r.hospital_county))
+        WHEN 'manhattan' THEN 'Manhattan'
+        WHEN 'new york'  THEN 'Manhattan'
+        WHEN 'kings'     THEN 'Brooklyn'
+        WHEN 'richmond'  THEN 'Staten Island'
+        WHEN 'queens'    THEN 'Queens'
+        WHEN 'bronx'     THEN 'Bronx'
+        ELSE r.hospital_county
+    END                                 AS borough,
+    r.primary_zip3,
+    r.patient_volume,
+    r.avg_severity,
+    r.observed_avg_los,
+    r.expected_avg_los,
+    r.oe_ratio_los,
+    r.observed_adverse_pct,
+    r.oe_ratio_adverse,
+    r.clinical_oe,
+    r.procedure_cost                    AS facility_procedure_cost,
+    r.cost_basis,
+    r.market_median_cost,
+    round(100.0 * (r.procedure_cost - r.market_median_cost)
+          / nullif(r.market_median_cost, 0), 1) AS pct_vs_market_median,
+    r.value_index,
+    r.value_rank,
+    r.star_rating
+FROM ranked r;

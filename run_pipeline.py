@@ -68,6 +68,16 @@ def cmd_cost(_args) -> None:
     sparcs_cost.fetch_cost_data()
 
 
+def cmd_quality(_args) -> None:
+    from etl import cms_quality, crosswalk
+    cms_quality.fetch_quality()
+    cms_quality.fetch_overall_rating()
+    try:
+        crosswalk.build_ccn()
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("CCN crosswalk skipped: %s", exc)
+
+
 def cmd_transform(_args) -> None:
     from etl import db
     db.run_sql_file(config.SQL_DIR / "02_transformations.sql")
@@ -104,6 +114,7 @@ def cmd_all(args) -> None:
     cmd_cost(args)
     cmd_transform(args)
     cmd_crosswalk(args)
+    cmd_quality(args)
     cmd_score(args)
     cmd_export(args)
     cmd_publish(args)
@@ -135,6 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "cost", help="load SPARCS Cost Transparency (facility median charge/cost)"
     ).set_defaults(func=cmd_cost)
+
+    sub.add_parser(
+        "quality", help="load CMS Care Compare hip/knee outcome measures"
+    ).set_defaults(func=cmd_quality)
 
     sub.add_parser("transform", help="run 02_transformations.sql").set_defaults(
         func=cmd_transform
