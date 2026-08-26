@@ -1,0 +1,32 @@
+# ---- Credentials: never commit -------------------------------------------
+.env
+*.env
+!.env.example
+.streamlit/secrets.toml
+
+# ---- Raw and derived healthcare data -------------------------------------
+# SPARCS public-use files and hospital MRFs run to gigabytes. Working exports
+# stay local; only the small published snapshot is committed.
+*.csv
+*.json.gz
+*.zip
+exports/
+
+# Re-included: small, curated, and needed by the app or the pipeline.
+!data/target_hospitals.csv
+!data/facility_crosswalk_review.csv
+!data/nyc_ortho_scores_public.csv
+
+# ---- Python ---------------------------------------------------------------
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# ---- Editors / OS ---------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

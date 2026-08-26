@@ -1,0 +1,19 @@
+system_name,facility_name,domain,manual_mrf_url,notes
+Hospital for Special Surgery,Hospital for Special Surgery,hss.edu,,Highest-volume joint replacement centre in the market; the single most important facility for this MVP
+NewYork-Presbyterian,NewYork-Presbyterian Hospital,nyp.org,,Multi-campus; expect repeating cms-hpt.txt blocks
+Mount Sinai Health System,The Mount Sinai Hospital,mountsinai.org,,Multi-campus (Mount Sinai West / Morningside / Beth Israel / BI Brooklyn)
+NYU Langone Health,NYU Langone Hospitals,nyulangone.org,,Includes NYU Langone Orthopedic Hospital
+Northwell Health,Lenox Hill Hospital,northwell.edu,,Multi-campus; also Staten Island University Hospital and Long Island Jewish Forest Hills
+Montefiore Medicine,Montefiore Medical Center,montefiore.org,,Bronx; multi-campus
+NYC Health + Hospitals,NYC Health + Hospitals,nychealthandhospitals.org,,Public system; 11 acute-care facilities across the 5 boroughs
+Maimonides Medical Center,Maimonides Medical Center,maimonidesmed.org,,Brooklyn
+BronxCare Health System,BronxCare Hospital Center,bronxcare.org,,Bronx
+SBH Health System,St. Barnabas Hospital,sbhny.org,,Bronx
+One Brooklyn Health,Brookdale Hospital Medical Center,onebrooklynhealth.org,,Brooklyn; also Interfaith and Kingsbrook Jewish
+Wyckoff Heights Medical Center,Wyckoff Heights Medical Center,wyckoffhospital.org,,Brooklyn/Queens border
+MediSys Health Network,Jamaica Hospital Medical Center,jamaicahospital.org,,Queens
+MediSys Health Network,Flushing Hospital Medical Center,flushinghospital.org,,Queens
+SUNY Downstate Health Sciences University,University Hospital of Brooklyn,downstate.edu,,Brooklyn
+Richmond University Medical Center,Richmond University Medical Center,rumcsi.org,,Staten Island
+NewYork-Presbyterian Brooklyn Methodist,NewYork-Presbyterian Brooklyn Methodist Hospital,nyp.org,,May be covered by the NYP system file
+New York Community Hospital,New York Community Hospital,nych.com,,Brooklyn; Maimonides affiliate
