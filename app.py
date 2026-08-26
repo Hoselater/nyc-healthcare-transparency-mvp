@@ -451,19 +451,47 @@ to the average for its own APR severity tier (1 Minor → 4 Extreme) and dischar
 year, so a hospital treating sicker patients is not penalised for it. An O/E
 below 1.0 means better than expected.
 
-**What this is not**
+**"Cost" means three different things, and they are never mixed**
 
-* Length of stay and discharge disposition are *proxies*. The SPARCS public-use
-  file carries no readmission, revision, or complication data.
+| Basis | What it is |
+|---|---|
+| `mrf_negotiated` | What a named insurer actually agreed to pay. Preferred. |
+| `sparcs_charge` | The hospital's list price. Almost nobody pays it — typically **2–4× the negotiated rate**. Fallback only. |
+
+Each facility is benchmarked only against others measured the same way. Pooling
+them would make every negotiated-rate hospital look like a bargain purely
+because of which source its number came from.
+
+**The length-of-stay proxy has been tested against real outcomes**
+
+Across the 27 facilities where both exist, length-of-stay O/E correlates
+**0.44** with CMS's actual complication rate. Real signal, but moderate — the
+proxy tracks outcomes without substituting for them. Staten Island University
+Hospital is the clearest counter-example: an O/E of 1.89 looks alarming, yet its
+complication rate is *below* the NYC average.
+
+That is why the CMS complication and readmission rates are shown **beside** the
+Value Index rather than folded into it. They are missing for about a quarter of
+the market, and scoring some hospitals on real outcomes and the rest on a proxy
+would produce one number meaning different things for different rows.
+
+**Where you should look first:** if a facility has CMS complication and
+readmission rates, weight those above this rating. They measure the thing you
+actually care about.
+
+**What this is still not**
+
 * Published rates are not out-of-pocket cost. They ignore deductibles,
-  coinsurance, and benefit design.
-* Stays of 120+ days are censored to 120 in the source data, so observed LOS is
-  a floor for facilities with long-stay outliers.
-* MRF compliance is partial across hospitals, so market coverage is incomplete.
+  coinsurance and benefit design, and cover the **facility only** — not the
+  surgeon, anaesthesia, separately billed implants, or rehab.
+* Stays of 120+ days are censored in the source data, so observed LOS is a floor.
+* MS-DRG 470 covers hip *and* knee in one code, so hospitals pricing on it have
+  no per-procedure split to give.
 * The index weights are a reasoned judgement, not a validated model.
 
-**Sources** — NY SPARCS De-Identified Inpatient Discharges (Health Data NY);
-CMS Hospital Price Transparency machine-readable files (45 CFR Part 180).
+**Sources** — NY SPARCS De-Identified Inpatient Discharges and SPARCS Cost
+Transparency (Health Data NY); CMS Hospital Price Transparency machine-readable
+files (45 CFR Part 180); CMS Care Compare (data.cms.gov).
         """
     )
 
