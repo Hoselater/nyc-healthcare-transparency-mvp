@@ -301,11 +301,15 @@ etl/
   mrf.py                   MRF parsing (CSV tall/wide, JSON)
   crosswalk.py             Entity resolution
   export.py                Tableau CSV export
+  nycdot/                  NYC DOT traffic scraper (standalone; see docs)
+tests/
+  test_nycdot.py           Offline tests for the traffic scraper
 data/
   target_hospitals.csv           Crawl list -- edit to widen the market
   nyc_ortho_scores_public.csv    Published snapshot read by the web app
 docs/
   DEPLOYMENT.md            Free hosting, start to finish
+  NYCDOT_TRAFFIC.md        Live traffic speeds and cameras, East Side focus
   Healthcare Transparency MVP - Master Plan v3.docx / .pdf
   ERRATA.md                Defects found in the original scripts
 ```
