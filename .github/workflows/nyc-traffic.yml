@@ -30,6 +30,10 @@ on:
     - cron: "7,27,47 * * * *"
   workflow_dispatch:
     inputs:
+      run_for_hours:
+        description: "Keep collecting for this many hours (0 = one snapshot). Max 5.5."
+        type: string
+        default: "0"
       images:
         description: "Also capture a still from every East Side camera"
         type: boolean
@@ -51,7 +55,9 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Long enough for a full continuous run. A hosted job is killed at six
+    # hours, so this leaves room to finish the last collection and push it.
+    timeout-minutes: 350
 
     steps:
       - name: Check out the collector
@@ -82,6 +88,8 @@ jobs:
           HISTORY_DAYS: ${{ inputs.history_days || '3' }}
           IMAGES: ${{ inputs.images || false }}
           KEEP_RUNS: "72"
+          RUN_FOR_HOURS: ${{ inputs.run_for_hours || '0' }}
+          INTERVAL_MINUTES: "20"
 
           # Phone alerts. Set whichever one you use as a repository secret;
           # alerting stays off entirely while these are empty. A missing secret
@@ -102,4 +110,4 @@ jobs:
           # Lets the alert carry a tappable link to the published report.
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: bash .github/scripts/collect_traffic.sh
+        run: bash .github/scripts/collect_continuously.sh

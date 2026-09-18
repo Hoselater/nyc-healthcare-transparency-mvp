@@ -205,18 +205,46 @@ or skipped when the service is busy; missed runs only mean fewer samples. And
 GitHub disables schedules on repositories with no activity for sixty days, which
 a single commit resets.
 
-The schedule deliberately fires at seven, twenty-seven and forty-seven minutes
-past rather than on the hour. GitHub's queue is heaviest at the top of the hour,
-which is where an every-twenty-minutes schedule naturally lands, and the first
-attempt here missed three consecutive slots without firing once. If the schedule
-still does not fire, the collector is unaffected: "Run workflow" in the Actions
-tab collects on demand.
+### The schedule has never fired
+
+Six consecutive slots passed without a single scheduled run, across two
+different cron expressions, with the workflow `state: active` and its syntax
+valid on the default branch the whole time:
+
+```
+03:40  04:00  04:20     cron */20
+04:47  05:07  05:27     cron 7,27,47, moved off the hour deliberately
+```
+
+GitHub's queue is heaviest on the hour, which is where an every-twenty-minutes
+schedule naturally lands, so the second expression avoids it. That changed
+nothing. The cron is left in place in case it starts working, but nothing here
+depends on it.
+
+### Collecting for hours from one click
+
+Because a lone snapshot can only be compared against a posted speed limit, and
+baselines need observations spread across the day, a manual start can collect
+continuously instead of once. In the Actions tab, choose "Run workflow" and set
+**run_for_hours** to 5. It then collects every twenty minutes for five hours,
+publishing each time, and a single failed collection does not end the run: the
+feed intermittently answers with nothing, which is a reason to try again in
+twenty minutes rather than to stop. The run goes red only if every collection
+in it failed.
+
+Five and a half hours is the ceiling, because a hosted job is killed at six.
+
+It cannot restart itself. A job can re-dispatch a workflow through the API, but
+GitHub deliberately ignores `workflow_dispatch` events authenticated with the
+built-in `GITHUB_TOKEN`, precisely to stop workflows looping forever. Making it
+perpetual needs a personal access token, which only the repository owner can
+create.
 
 ### Where this can run
 
 | Where | Works? |
 | --- | --- |
-| GitHub Actions | Yes, and it is the only option that collects unattended, and it can push alerts to your phone |
+| GitHub Actions | Yes. One click collects for up to five hours and can push alerts to your phone. The cron schedule has never fired. |
 | Home computer | Yes, Python 3.9 or newer and `pip install requests` |
 | Phone, reading results | Yes, the report renders in a browser, and alerts arrive as notifications |
 | Phone, running the scraper | Possible via a terminal app, but a watch loop needs a machine that stays awake |
