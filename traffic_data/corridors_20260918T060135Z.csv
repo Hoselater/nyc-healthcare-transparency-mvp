@@ -1,0 +1,2 @@
+corridor,links,links_with_trusted_length,miles_covered,mean_speed_mph,congestion_ratio,congestion_level,basis,slowest_link,slowest_speed_mph,total_delay_seconds
+FDR Drive,6,2,5.7,9.3,0.268,severe,2 of 6 segments by distance,BKN Bridge Manhattan Side - FDR N Catherine Slip,6.83,1790.2
