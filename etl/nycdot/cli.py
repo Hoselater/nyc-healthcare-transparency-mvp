@@ -331,8 +331,24 @@ def command_snapshot(args: argparse.Namespace) -> int:
     report_path = args.output / f"report_{stamp}.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
-    (args.output / "latest_report.md").write_text(report, encoding="utf-8")
     log.info("Wrote report to %s", report_path)
+
+    if not assessments:
+        # A snapshot that measured nothing must not replace one that did.
+        # The published feed has been seen answering a valid query with an
+        # empty result and then serving the same query normally minutes later;
+        # overwriting a good report with "nothing can be said" loses real data
+        # and reports success while doing it. Leave the last good report alone
+        # and fail loudly instead.
+        print(
+            f"\nCollected no usable readings ({quality['links_citywide']} links "
+            f"citywide, {quality['links_in_region']} in region). The last good "
+            "report has been left in place and nothing was published.\n",
+            file=sys.stderr,
+        )
+        return 3
+
+    (args.output / "latest_report.md").write_text(report, encoding="utf-8")
 
     if args.images:
         in_region_cameras = [camera for camera in cameras if camera.in_region]

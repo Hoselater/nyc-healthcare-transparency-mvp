@@ -370,8 +370,21 @@ def fetch_speeds(
     headers = {"X-App-Token": app_token} if app_token else None
     now_utc = datetime.now(timezone.utc)
 
+    def scan() -> list[dict[str, Any]]:
+        """The blunt query: newest rows first, no filter. Slower, but sturdy."""
+        log.info("Scanning the %d newest readings", max_records)
+        return _unwrap(
+            get_json(
+                session,
+                url,
+                params={"$limit": max_records, "$order": "data_as_of DESC"},
+                headers=headers,
+            )
+        )
+
     # Find where the data ends, then ask for the window just behind it.
     watermark = None
+    raw = None
     try:
         watermark, raw = feed_watermark(session, url, headers)
         if watermark:
@@ -379,21 +392,36 @@ def fetch_speeds(
     except FeedUnavailable as exc:
         log.warning("Could not read the feed watermark, scanning instead: %s", exc)
 
-    if watermark is not None:
-        cutoff = _local_literal(watermark - timedelta(minutes=window_minutes))
-        params = {
-            "$where": f"data_as_of > '{cutoff}'",
-            "$order": "data_as_of DESC",
-            "$limit": max_records,
-        }
-        log.info("Fetching readings from the %d minutes before it", window_minutes)
+    if watermark is None:
+        records = scan()
     else:
-        # No watermark: fall back to scanning the newest rows blindly.
-        params = {"$limit": max_records, "$order": "data_as_of DESC"}
-        log.info("Fetching the %d newest speed readings", max_records)
+        cutoff = _local_literal(watermark - timedelta(minutes=window_minutes))
+        log.info("Fetching readings from the %d minutes before it", window_minutes)
+        records = _unwrap(
+            get_json(
+                session,
+                url,
+                params={
+                    "$where": f"data_as_of > '{cutoff}'",
+                    "$order": "data_as_of DESC",
+                    "$limit": max_records,
+                },
+                headers=headers,
+            )
+        )
+        if not records:
+            # The watermark says data exists up to a given moment, and the
+            # window behind that moment came back empty. Those two answers
+            # contradict each other, and the API has been observed serving both
+            # within a quarter of an hour for the same query. Do not believe the
+            # empty one: ask a differently shaped question before giving up.
+            log.warning(
+                "The windowed query returned nothing although the feed reports "
+                "readings up to %s. Falling back to a scan.",
+                raw,
+            )
+            records = scan()
 
-    payload = get_json(session, url, params=params, headers=headers)
-    records = _unwrap(payload)
     log.info("Feed returned %d rows", len(records))
 
     observations: list[SpeedLink] = []

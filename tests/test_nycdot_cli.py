@@ -245,3 +245,75 @@ class TestSnapshotCommand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyFeedHandling(TestSnapshotCommand):
+    """What happens when the published feed answers with nothing.
+
+    Observed in production: the same windowed query served 749 rows, then zero
+    fourteen minutes later, then normally again. An empty answer is not
+    evidence that the roads are empty.
+    """
+
+    def test_an_empty_feed_does_not_overwrite_the_last_good_report(self):
+        directory = self._run("snapshot")
+        good = (directory / "latest_report.md").read_text(encoding="utf-8")
+        self.assertIn("FDR", good)
+
+        # The feed goes dark.
+        previous = _Handler.links
+        _Handler.links = []
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ) as errors:
+                code = main(
+                    [
+                        "--output",
+                        str(directory),
+                        "--speeds-url",
+                        f"http://127.0.0.1:{self.port}/speeds.json",
+                        "--cameras-url",
+                        f"http://127.0.0.1:{self.port}/cameras.json",
+                        "snapshot",
+                    ]
+                )
+        finally:
+            _Handler.links = previous
+
+        # The run fails rather than reporting a quiet success...
+        self.assertEqual(code, 3)
+        self.assertIn("Collected no usable readings", errors.getvalue())
+        # ...and the last good report is still there, untouched.
+        self.assertEqual((directory / "latest_report.md").read_text(encoding="utf-8"), good)
+
+    def test_the_empty_run_still_leaves_a_record_of_itself(self):
+        directory = self._run("snapshot")
+        previous = _Handler.links
+        _Handler.links = []
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                main(
+                    [
+                        "--output",
+                        str(directory),
+                        "--speeds-url",
+                        f"http://127.0.0.1:{self.port}/speeds.json",
+                        "--cameras-url",
+                        f"http://127.0.0.1:{self.port}/cameras.json",
+                        "snapshot",
+                    ]
+                )
+        finally:
+            _Handler.links = previous
+        # Timestamps have one-second resolution, so the run may reuse a
+        # filename; what matters is that the empty snapshot is on record.
+        written = [
+            path.read_text(encoding="utf-8") for path in directory.glob("report_*.md")
+        ]
+        self.assertTrue(
+            any("No usable link readings" in text for text in written),
+            "the empty snapshot left no record of itself",
+        )

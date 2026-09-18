@@ -450,6 +450,10 @@ class TestWatermarkQuery(unittest.TestCase):
                 captured.append(query)
                 if "$select" in query:
                     body = json.dumps([{"newest": newest}])
+                elif "$where" in query and self.server.empty_window:
+                    # The observed production failure: a valid windowed query
+                    # answered with nothing.
+                    body = json.dumps([])
                 else:
                     body = json.dumps(
                         [
@@ -473,6 +477,7 @@ class TestWatermarkQuery(unittest.TestCase):
         self.captured = captured
         self.newest = newest
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.server.empty_window = False
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/speeds.json"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -504,3 +509,21 @@ class TestWatermarkQuery(unittest.TestCase):
 
         self.assertEqual([link.link_id for link in links], ["1000"])
         self.assertFalse(links[0].is_stale)
+
+    def test_an_empty_window_falls_back_to_a_scan(self):
+        from etl.nycdot.fetch import build_session
+        from etl.nycdot.speeds import fetch_speeds
+
+        # The feed reports data up to the watermark, then answers the window
+        # behind it with nothing. Those two answers contradict each other, and
+        # production has served both for the same query minutes apart.
+        self.server.empty_window = True
+        links = fetch_speeds(build_session(retries=1), url=self.url, window_minutes=30)
+
+        self.assertEqual(len(self.captured), 3, "expected watermark, window, then scan")
+        self.assertIn("$where", self.captured[1])
+        self.assertNotIn("$where", self.captured[2])
+        self.assertEqual(self.captured[2]["$order"], ["data_as_of DESC"])
+
+        # The scan found the data the window claimed was not there.
+        self.assertEqual([link.link_id for link in links], ["1000"])

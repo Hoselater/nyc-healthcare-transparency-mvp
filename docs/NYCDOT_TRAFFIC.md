@@ -26,6 +26,14 @@ an arbitrary slice of the past few months, found a median age of two weeks, and
 correctly concluded it had nothing current to say. The fix is to ask for the
 newest rows explicitly and keep only the most recent reading of each link.
 
+The feed also answers inconsistently. The same windowed query returned 749
+rows, then zero fourteen minutes later with an identical watermark, then
+normally again. An empty answer is not evidence that the roads are empty, so a
+window that comes back empty while the watermark says data exists is retried as
+a differently shaped query before being believed. And a snapshot that measures
+nothing never overwrites one that did: the last good report stays put and the
+run fails loudly instead of reporting a quiet success over lost data.
+
 Staleness moved with it. Measuring each reading against the wall clock means
 that when the publisher falls behind, every link is branded stale and the
 snapshot reports nothing at all. A sensor is now stale when it lags *the rest of
@@ -277,7 +285,7 @@ days, which is well past what a baseline needs.
 python -m unittest discover -s tests -t .
 ```
 
-Eighty-three offline tests, no internet access needed. The unit tests cover the cases
+Ninety-four offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The
