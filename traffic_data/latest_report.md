@@ -1,0 +1,54 @@
+# Manhattan East Side traffic snapshot
+
+Taken Thursday 17 September 2026, 23:44 New York time (03:44 UTC).
+
+> **The published feed is 3.0 hours behind.** The newest reading available was taken at 20:46 New York time, so everything below describes that moment, not now.
+
+## Headline
+
+Across 8 measured segments the East Side is running **heavy**, averaging 22.4 mph, which is 51% of free flow judged against posted-limit assumptions.
+
+The slowest segment is **FDR S 63rd - 25th St** at 13.0 mph (26% of free flow).
+
+## Corridors, worst first
+
+| Corridor | Level | Mean speed (mph) | % of free flow | Links | Miles |
+| --- | --- | ---: | ---: | ---: | ---: |
+| FDR Drive | severe | 19.2 | 38% | 6 | 7.4 |
+| Queens-Midtown Tunnel | free flow | 30.5 | 87% | 2 | 2.3 |
+
+## Slowest 8 segments
+
+| Segment | Speed (mph) | % of free flow | Delay (s) | Camera |
+| --- | ---: | ---: | ---: | --- |
+| FDR S 63rd - 25th St | 13.0 | 26% | 196 | FDR @ E 53 St |
+| FDR N Catherine Slip - 25th St | 19.3 | 38% | 544 | FDR @ E 6 St |
+| BKN Bridge Manhattan Side - FDR N Catherine Slip | 19.3 | 38% | 23 | FDR Dr @ Brooklyn Bridge Exit NB |
+| FDR S Catherine Slip - BKN Bridge Manhattan Side | 19.9 | 40% | 22 | FDR Dr @ Brooklyn Bridge Exit NB |
+| FDR S 25th St - Catherine Slip | 23.0 | 46% | 46 | AVE C @ 18 St |
+| FDR N 25th - 63rd St | 24.2 | 48% | 56 | FDR Dr @ 36 St |
+| QMT E Manhattan Side - Toll Plaza | 29.2 | 83% | 23 | FDR @ 38 St |
+| QMT W Toll Plaza - Manhattan Side | 31.7 | 90% | 13 | FDR @ 38 St |
+
+## Cameras in the area
+
+183 of 979 public cameras fall inside the Manhattan East Side boundary, 182 of them reporting online.
+
+## What this snapshot can and cannot say
+
+| Measure | Value |
+| --- | ---: |
+| links citywide | 125 |
+| links in region | 10 |
+| links used | 8 |
+| links reporting zero | 2 |
+| links stale | 0 |
+| links without geometry | 0 |
+| links speed disagrees with travel time | 4 |
+| links timestamped in future | 0 |
+| feed age minutes | 177.7 |
+| median reading age minutes | 180.8 |
+
+Sensor coverage is highways and major arterials only, so a street with no segment here is unmeasured, not clear. Readings of zero are treated as dropped sensors and excluded, as are sensors lagging more than a quarter of an hour behind the rest of the feed.
+
+8 of 8 segments have no free-flow baseline measured from history yet, so their percentages are judged against the posted limit for the road class and are indicative rather than measured. Running 'python -m etl.nycdot watch' across a full day and a quiet night replaces those assumptions with observation.
