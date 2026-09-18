@@ -189,6 +189,13 @@ or skipped when the service is busy; missed runs only mean fewer samples. And
 GitHub disables schedules on repositories with no activity for sixty days, which
 a single commit resets.
 
+The schedule deliberately fires at seven, twenty-seven and forty-seven minutes
+past rather than on the hour. GitHub's queue is heaviest at the top of the hour,
+which is where an every-twenty-minutes schedule naturally lands, and the first
+attempt here missed three consecutive slots without firing once. If the schedule
+still does not fire, the collector is unaffected: "Run workflow" in the Actions
+tab collects on demand.
+
 ### Where this can run
 
 | Where | Works? |

@@ -19,10 +19,15 @@ name: NYC East Side traffic
 
 on:
   schedule:
-    # Every 20 minutes. The feed refreshes about once a minute, so this is a
-    # sampling choice, not a limit: 72 readings a day per segment is plenty to
-    # estimate a free-flow speed from.
-    - cron: "*/20 * * * *"
+    # Every 20 minutes, deliberately off the hour. The feed refreshes about once
+    # a minute, so the interval is a sampling choice, not a limit: 72 readings a
+    # day per segment is ample for estimating a free-flow speed.
+    #
+    # The offset minutes matter. GitHub's scheduler is best-effort and is
+    # heaviest at the top of the hour, which is exactly where "*/20" lands (:00,
+    # :20, :40). That schedule missed its first three slots here without firing
+    # once. Odd minutes nobody else picks avoid the crowd.
+    - cron: "7,27,47 * * * *"
   workflow_dispatch:
     inputs:
       images:
