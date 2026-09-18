@@ -33,6 +33,17 @@ from etl.nycdot.analyze import (
 )
 from etl.nycdot.cameras import CAMERA_LIST_URL, download_stills, fetch_cameras
 from etl.nycdot.fetch import FeedUnavailable, build_session
+from etl.nycdot.notify import (
+    DEFAULT_COOLDOWN_MINUTES,
+    DEFAULT_THRESHOLD,
+    STATE_FILENAME,
+    Notifier,
+    build_alerts,
+    combine_alerts,
+    load_state,
+    reconcile_state,
+    save_state,
+)
 from etl.nycdot.speeds import SPEEDS_URL, fetch_speeds
 
 log = logging.getLogger("etl.nycdot")
@@ -152,6 +163,69 @@ def _region(args: argparse.Namespace) -> geo.Region | None:
     return None if getattr(args, "all_nyc", False) else geo.EAST_SIDE
 
 
+def _report_url() -> str | None:
+    """A link to the published report, when running somewhere that knows one.
+
+    On GitHub Actions the server and repository are in the environment, so the
+    alert can carry a tappable link straight to the latest report.
+    """
+    explicit = os.getenv("REPORT_URL")
+    if explicit:
+        return explicit
+    server = os.getenv("GITHUB_SERVER_URL")
+    repository = os.getenv("GITHUB_REPOSITORY")
+    branch = os.getenv("DATA_BRANCH")
+    if server and repository and branch:
+        return f"{server}/{repository}/blob/{branch}/traffic_data/latest_report.md"
+    return None
+
+
+def send_alerts(args: argparse.Namespace, corridors: Sequence[dict[str, Any]]) -> int:
+    """Notify on corridors that have changed state. Returns alerts delivered."""
+    state_path = args.output / STATE_FILENAME
+    previous = load_state(state_path)
+
+    corridor_filter = args.notify_corridors or os.getenv("NOTIFY_CORRIDORS") or ""
+    alerts, tentative = build_alerts(
+        corridors,
+        previous,
+        threshold=args.notify_level or os.getenv("NOTIFY_LEVEL") or DEFAULT_THRESHOLD,
+        cooldown_minutes=args.notify_cooldown,
+        only=[part for part in corridor_filter.split(",") if part.strip()] or None,
+        report_url=_report_url(),
+    )
+
+    notifier = Notifier()
+    if notifier.transport is None:
+        print(
+            "Alerts are on but no transport is configured. Set NTFY_TOPIC (or "
+            "Pushover / Telegram credentials). See docs/NYCDOT_TRAFFIC.md.",
+            file=sys.stderr,
+        )
+        # The observed levels are still worth recording, but nothing was sent,
+        # so nothing may be marked as notified.
+        save_state(
+            state_path,
+            reconcile_state(tentative, previous, [alert.corridor for alert in alerts]),
+        )  # nothing was sent, so nothing may be marked notified
+        return 0
+
+    # A burst goes out as one message, but the state is still per corridor, so
+    # a failed summary has to un-mark every corridor it covered.
+    outgoing = combine_alerts(alerts, report_url=_report_url())
+    failed_kinds = {alert.kind for alert in outgoing if not notifier.send(alert)}
+    failed = [alert.corridor for alert in alerts if alert.kind in failed_kinds]
+    save_state(state_path, reconcile_state(tentative, previous, failed))
+
+    delivered = len(outgoing) - len(failed_kinds)
+    if outgoing:
+        print(
+            f"{delivered} of {len(outgoing)} notification(s) delivered via "
+            f"{notifier.transport}, covering {len(alerts)} corridor change(s)"
+        )
+    return delivered
+
+
 def _app_token() -> str | None:
     return os.getenv("NYC_OPEN_DATA_APP_TOKEN") or os.getenv("SOCRATA_APP_TOKEN") or None
 
@@ -242,6 +316,9 @@ def command_snapshot(args: argparse.Namespace) -> int:
 
     write_csv(args.output / f"assessed_links_{stamp}.csv", [item.as_row() for item in assessments])
     write_csv(args.output / f"corridors_{stamp}.csv", corridors)
+
+    if args.notify:
+        send_alerts(args, corridors)
 
     region = _region(args)
     report = render_report(
@@ -401,6 +478,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--speeds-url", default=SPEEDS_URL, help=argparse.SUPPRESS)
     parser.add_argument("--cameras-url", default=CAMERA_LIST_URL, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="push an alert when a corridor crosses into heavy or severe traffic",
+    )
+    parser.add_argument(
+        "--notify-level",
+        choices=("moderate", "heavy", "severe"),
+        default=None,
+        help=f"level that triggers an alert (default: {DEFAULT_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--notify-cooldown",
+        type=float,
+        default=DEFAULT_COOLDOWN_MINUTES,
+        help="minutes before the same level can alert again",
+    )
+    parser.add_argument(
+        "--notify-corridors",
+        default=None,
+        help="comma-separated corridors to alert on (default: all)",
+    )
     parser.add_argument(
         "--history-days",
         type=float,

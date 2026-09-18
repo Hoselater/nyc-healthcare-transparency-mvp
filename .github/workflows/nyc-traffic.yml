@@ -71,10 +71,30 @@ jobs:
         # report full of plausible-looking nonsense.
         run: python -m unittest discover -s tests -t . --quiet
 
-      - name: Collect a snapshot and publish it
+      - name: Collect a snapshot, publish it, and alert if needed
         env:
           DATA_BRANCH: traffic-data
           HISTORY_DAYS: ${{ inputs.history_days || '3' }}
           IMAGES: ${{ inputs.images || false }}
           KEEP_RUNS: "72"
+
+          # Phone alerts. Set whichever one you use as a repository secret;
+          # alerting stays off entirely while these are empty. A missing secret
+          # is an empty string, not an error.
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          # What is worth interrupting someone for. "severe" means under 40% of
+          # free flow. Set NOTIFY_LEVEL to "heavy" for a lower bar.
+          NOTIFY_LEVEL: ${{ vars.NOTIFY_LEVEL }}
+          NOTIFY_CORRIDORS: ${{ vars.NOTIFY_CORRIDORS }}
+
+          # Lets the alert carry a tappable link to the published report.
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash .github/scripts/collect_traffic.sh

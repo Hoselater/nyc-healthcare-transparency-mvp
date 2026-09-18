@@ -173,11 +173,82 @@ a single commit resets.
 
 | Where | Works? |
 | --- | --- |
-| GitHub Actions | Yes, and it is the only option that collects unattended |
+| GitHub Actions | Yes, and it is the only option that collects unattended, and it can push alerts to your phone |
 | Home computer | Yes, Python 3.9 or newer and `pip install requests` |
-| Phone, reading results | Yes, the report renders in a browser |
+| Phone, reading results | Yes, the report renders in a browser, and alerts arrive as notifications |
 | Phone, running the scraper | Possible via a terminal app, but a watch loop needs a machine that stays awake |
 | This sandbox | No, the data hosts are blocked by its network policy |
+
+## Getting alerts on your phone
+
+The collector can push a notification when a corridor turns severe, and again
+when it clears. Alerting stays off until a transport is configured, so nothing
+here happens by accident.
+
+### What it sends, and what it does not
+
+A snapshot every twenty minutes is seventy-two a day. Sending one notification
+per snapshot is how an app gets silenced, so alerts fire on *change* only:
+
+* when a corridor first crosses into the alert level, and again if it gets
+  worse than the level you were already told about;
+* when it has stayed below that level for half an hour, which is the all-clear.
+  A single good reading is not enough, because traffic dips for one reading all
+  the time and an all-clear sent into a jam that is still there is worse than
+  silence;
+* never twice for the same ongoing jam, and never more than once every ninety
+  minutes for a corridor flapping either side of the line.
+
+If several corridors turn bad in the same snapshot, which is normal at rush
+hour, they arrive as one summary rather than four separate buzzes. A simulated
+day with two rush periods produces four notifications; a quiet day produces
+none.
+
+The default level is **severe**, meaning under 40% of free flow. Set the
+repository variable `NOTIFY_LEVEL` to `heavy` for a lower bar, and
+`NOTIFY_CORRIDORS` to a comma-separated list to limit which roads can wake you.
+
+### Setting it up with ntfy (no account needed)
+
+1. Install **ntfy** on your phone, from the App Store or Google Play.
+2. Pick a topic name nobody could guess. ntfy topics are unauthenticated by
+   default, so the name *is* the password. Something like
+   `nyc-traffic-939c728fbf59`.
+3. In the app, tap **+** and subscribe to that topic.
+4. In this repository on GitHub, go to **Settings → Secrets and variables →
+   Actions → New repository secret**. Name it `NTFY_TOPIC` and paste the topic
+   name as the value.
+5. Test it from the **Actions** tab: pick "NYC East Side traffic", then **Run
+   workflow**. If any corridor is severe, the alert arrives within a minute.
+
+That is the whole setup. There is nothing to install on a computer and no
+account to create.
+
+### Or Pushover, or Telegram
+
+Set these as repository secrets instead; whichever is present wins, in this
+order.
+
+| Transport | Secrets | Notes |
+| --- | --- | --- |
+| ntfy | `NTFY_TOPIC` | Free, no account. `NTFY_SERVER` and `NTFY_TOKEN` for a self-hosted or protected instance. |
+| Pushover | `PUSHOVER_USER_KEY`, `PUSHOVER_APP_TOKEN` | One-off purchase per platform. |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Free; create the bot with BotFather. |
+
+A failed notification never fails a collection run, and an alert that could not
+be delivered is not recorded as sent, so the next run tries again rather than
+staying silent forever.
+
+### Running alerts from your own machine
+
+```bash
+export NTFY_TOPIC=nyc-traffic-939c728fbf59
+python -m etl.nycdot --notify --notify-level heavy snapshot
+```
+
+Alert state is kept in `alert_state.json` next to the other outputs. Deleting it
+resets what you have been told, so the next run alerts on everything currently
+bad.
 
 ## Retention
 
@@ -194,13 +265,16 @@ days, which is well past what a baseline needs.
 python -m unittest discover -s tests -t .
 ```
 
-Forty-five offline tests, no internet access needed. The unit tests cover the cases
+Seventy-seven offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The
 command line tests run a whole snapshot against fixtures served from a loopback
 HTTP server, checking that the region filter, the outputs, the camera join and
-the placeholder-image rejection all still work together.
+the placeholder-image rejection all still work together. The alert tests are
+mostly about staying quiet: an ongoing jam, a flapping corridor and a single
+good reading must all produce silence, and a simulated day of collection must
+produce a handful of notifications rather than seventy.
 
 ## Terms of use
 

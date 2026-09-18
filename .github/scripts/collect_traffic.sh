@@ -13,6 +13,10 @@
 #   KEEP_RUNS     timestamped per-run CSVs to retain (default: 96, one day)
 #   IMAGES        "true" to also capture a still from every camera
 #   PYTHON_BIN    interpreter to run (default: python)
+#
+# Phone alerts are enabled automatically when credentials for a transport are
+# present (NTFY_TOPIC, or Pushover, or Telegram). NOTIFY_LEVEL and
+# NOTIFY_CORRIDORS tune what is worth interrupting someone for.
 
 set -euo pipefail
 
@@ -47,7 +51,25 @@ fi
 
 mkdir -p "$OUTPUT"
 
-ARGUMENTS=(--output "$OUTPUT" --history-days "$HISTORY_DAYS" snapshot)
+ARGUMENTS=(--output "$OUTPUT" --history-days "$HISTORY_DAYS")
+
+# Alerting turns itself on when there is somewhere to send to. Without this the
+# collector would need a separate switch that could drift out of step with
+# whether the credentials are actually set.
+if [ -n "${NTFY_TOPIC:-}" ] || [ -n "${PUSHOVER_USER_KEY:-}" ] || [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+  echo "Alert transport configured; phone alerts are on."
+  ARGUMENTS+=(--notify)
+  if [ -n "${NOTIFY_LEVEL:-}" ]; then
+    ARGUMENTS+=(--notify-level "$NOTIFY_LEVEL")
+  fi
+  if [ -n "${NOTIFY_CORRIDORS:-}" ]; then
+    ARGUMENTS+=(--notify-corridors "$NOTIFY_CORRIDORS")
+  fi
+else
+  echo "No alert transport configured; collecting quietly."
+fi
+
+ARGUMENTS+=(snapshot)
 if [ "${IMAGES:-false}" = "true" ]; then
   ARGUMENTS+=(--images)
 fi
