@@ -1,10 +1,19 @@
 """NYC DOT real-time link speeds.
 
-DOT runs a network of roadway sensors and publishes the current state of each
-directional segment ("link") as a live feed, mirrored on NYC Open Data as
-dataset ``i4gi-tjb9`` ("DOT Traffic Speeds NBE"). It refreshes about once a
-minute and is a snapshot, not a history: nothing accumulates unless you keep
-the snapshots yourself, which is what :func:`append_history` is for.
+DOT runs a network of roadway sensors and publishes the state of each
+directional segment ("link") to NYC Open Data as dataset ``i4gi-tjb9``
+("DOT Traffic Speeds NBE"), which updates about once a minute.
+
+**The dataset is an archive, not a snapshot.** It holds one row per link per
+observation and keeps accumulating, so it runs to millions of rows covering
+months. Socrata returns rows in no defined order unless asked, so a plain
+request for the first N rows hands back an arbitrary slice of history: the
+first live run of this collector pulled a million rows whose median age was two
+weeks, and concluded, correctly but uselessly, that it had nothing current.
+
+Reading the current state therefore means asking for the newest rows
+explicitly (``$order=data_as_of DESC``) and keeping only the most recent
+observation of each link, which is what :func:`latest_per_link` does.
 
 Caveats that matter when reading the numbers:
 
@@ -49,8 +58,10 @@ SPEEDS_URL = f"https://{SOCRATA_DOMAIN}/resource/{SPEEDS_DATASET_ID}.json"
 # camelCase names, which the shared normaliser already handles.
 RAW_FEED_URL = "https://data.cityofnewyork.us/api/views/i4gi-tjb9/rows.json"
 
-PAGE_SIZE = 50_000
-MAX_PAGES = 20
+# How many of the newest rows to scan. The feed carries roughly 1,500 links, so
+# this covers many observations of each; deduplication then reduces it to one
+# row per link. Scanning more costs time without finding more links.
+MAX_RECORDS = 50_000
 STALE_AFTER_MINUTES = 15
 
 FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
@@ -78,6 +89,7 @@ class SpeedLink:
     status: str | None
     data_as_of_local: str | None
     age_minutes: float | None
+    lag_minutes: float | None
     is_stale: bool
     borough: str | None
     owner: str | None
@@ -207,7 +219,10 @@ def normalise_link(
         status=str(values["status"]).strip() if values["status"] not in (None, "") else None,
         data_as_of_local=str(values["data_as_of"]) if values["data_as_of"] not in (None, "") else None,
         age_minutes=age_minutes,
-        is_stale=bool(age_minutes is not None and age_minutes > STALE_AFTER_MINUTES),
+        # Both are filled in by mark_staleness once the whole batch is known:
+        # a link is stale relative to the rest of the feed, not to the clock.
+        lag_minutes=None,
+        is_stale=False,
         borough=str(values["borough"]).strip() if values["borough"] not in (None, "") else None,
         owner=str(values["owner"]).strip() if values["owner"] not in (None, "") else None,
         length_miles=length_miles,
@@ -241,48 +256,128 @@ def _unwrap(payload: Any) -> list[dict[str, Any]]:
     )
 
 
+def latest_per_link(links: Sequence[SpeedLink]) -> list[SpeedLink]:
+    """One row per link: the most recent observation of each.
+
+    The archive holds every past reading, so without this a single link
+    contributes dozens of rows and the corridor averages become an average over
+    history rather than a picture of now.
+    """
+    newest: dict[str, SpeedLink] = {}
+    for link in links:
+        current = newest.get(link.link_id)
+        if current is None:
+            newest[link.link_id] = link
+            continue
+        # A smaller age is a more recent reading. A row with no readable
+        # timestamp loses to one that has a timestamp.
+        if link.age_minutes is None:
+            continue
+        if current.age_minutes is None or link.age_minutes < current.age_minutes:
+            newest[link.link_id] = link
+    return list(newest.values())
+
+
+def feed_age_minutes(links: Sequence[SpeedLink]) -> float | None:
+    """How old the freshest reading in the feed is, in minutes.
+
+    This is the currency of the data itself, and is reported separately from
+    any individual sensor's lag. A feed that is hours behind is a fact about the
+    source, not about traffic.
+    """
+    ages = [link.age_minutes for link in links if link.age_minutes is not None]
+    return min(ages) if ages else None
+
+
+def mark_staleness(
+    links: Sequence[SpeedLink], *, stale_after_minutes: float = STALE_AFTER_MINUTES
+) -> float | None:
+    """Flag sensors lagging the rest of the feed. Returns the feed's own age.
+
+    Staleness is measured against the freshest reading in the batch rather than
+    against the wall clock. A sensor that stopped reporting an hour ago is a
+    dropped sensor whichever way you measure it, but if the whole feed is
+    running an hour behind, every link would otherwise be branded stale and the
+    snapshot would report nothing at all. That is a fact about the publisher,
+    and it belongs in the report rather than in the filter.
+    """
+    newest = feed_age_minutes(links)
+    if newest is None:
+        return None
+
+    for link in links:
+        if link.age_minutes is None:
+            link.lag_minutes = None
+            link.is_stale = False
+            continue
+        link.lag_minutes = round(link.age_minutes - newest, 1)
+        link.is_stale = link.lag_minutes > stale_after_minutes
+    return newest
+
+
 def fetch_speeds(
     session: requests.Session,
     *,
     url: str = SPEEDS_URL,
     app_token: str | None = None,
     region: geo.Region | None = geo.EAST_SIDE,
-    page_size: int = PAGE_SIZE,
+    max_records: int = MAX_RECORDS,
 ) -> list[SpeedLink]:
     """Pull the current state of every link, normalise it, and tag the region.
 
-    Anonymous Socrata requests are throttled hard; an app token (free, from
+    Asks for the newest rows explicitly. Socrata's default order is undefined,
+    and on a multi-million-row archive that means an arbitrary slice of the past
+    rather than the present.
+
+    Anonymous requests are throttled hard; an app token (free, from
     ``data.cityofnewyork.us``) raises the limit and is passed as a header rather
     than a query parameter so it stays out of logs.
     """
     headers = {"X-App-Token": app_token} if app_token else None
     now_utc = datetime.now(timezone.utc)
 
-    records: list[dict[str, Any]] = []
-    for page in range(MAX_PAGES):
-        params = {"$limit": page_size, "$offset": page * page_size}
-        log.info("Fetching speed links, page %d", page + 1)
-        payload = get_json(session, url, params=params, headers=headers)
-        batch = _unwrap(payload)
-        records.extend(batch)
-        if len(batch) < page_size:
-            break
-    else:
-        log.warning("Stopped after %d pages; the feed may have more rows", MAX_PAGES)
+    params = {"$limit": max_records, "$order": "data_as_of DESC"}
+    log.info("Fetching the %d newest speed readings", max_records)
+    payload = get_json(session, url, params=params, headers=headers)
+    records = _unwrap(payload)
+    log.info("Feed returned %d rows", len(records))
 
-    links: list[SpeedLink] = []
+    observations: list[SpeedLink] = []
     skipped = 0
     for record in records:
         link = normalise_link(record, region=region, now_utc=now_utc)
         if link is None:
             skipped += 1
             continue
-        links.append(link)
+        observations.append(link)
 
     if skipped:
         log.warning("Skipped %d speed records with no link id", skipped)
 
-    log.info("Speed feed: %d links", len(links))
+    links = latest_per_link(observations)
+    newest_age = mark_staleness(links)
+
+    log.info(
+        "%d observations covering %d distinct links", len(observations), len(links)
+    )
+    if newest_age is not None:
+        log.info("Freshest reading in the feed is %.1f minutes old", newest_age)
+        if newest_age > 60:
+            log.warning(
+                "The feed's newest reading is %.0f minutes old. The published "
+                "dataset is lagging; the snapshot describes that moment, not now.",
+                newest_age,
+            )
+
+    if len(observations) >= max_records:
+        # Every row scanned was used, so there may be links whose most recent
+        # reading fell outside the window.
+        log.warning(
+            "Scanned the maximum of %d rows; some links may be missing. Raise "
+            "max_records if the link count looks low.",
+            max_records,
+        )
+
     if region is not None:
         log.info(
             "%d links touch %s",
@@ -291,11 +386,12 @@ def fetch_speeds(
         )
     stale = sum(1 for link in links if link.is_stale)
     if stale:
-        log.warning("%d links carry a timestamp older than %d minutes", stale, STALE_AFTER_MINUTES)
+        log.warning(
+            "%d links lag the rest of the feed by more than %d minutes",
+            stale,
+            STALE_AFTER_MINUTES,
+        )
 
-    # A reading cannot be from the future. If many are, the feed has changed its
-    # timezone convention and parse_feed_timestamp is now localising UTC
-    # timestamps to New York, putting every age out by four or five hours.
     future = sum(1 for link in links if link.age_minutes is not None and link.age_minutes < -5)
     if future:
         log.warning(

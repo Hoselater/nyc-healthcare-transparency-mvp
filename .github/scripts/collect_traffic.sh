@@ -78,12 +78,19 @@ echo "Collecting snapshot..."
 "$PYTHON_BIN" -m etl.nycdot "${ARGUMENTS[@]}"
 
 # Per-run CSVs accumulate one set per snapshot. Keep a rolling window; the
-# history file and the latest report carry everything that is read afterwards.
+# history files and the latest report carry everything that is read afterwards.
+#
+# Written with find rather than ls because a glob that matches nothing makes ls
+# exit non-zero, and under `set -o pipefail` that aborts the whole run. A
+# snapshot with no usable links writes no assessed_links file, which is exactly
+# when that happens, so this has to tolerate an empty match.
 prune_old() {
   local pattern="$1"
-  # shellcheck disable=SC2012 - filenames here are timestamps, so ls sorts right
-  ls -1 "$OUTPUT"/$pattern 2>/dev/null | sort -r | tail -n "+$((KEEP_RUNS + 1))" \
-    | while read -r stale; do rm -f "$stale"; done
+  local keep="${2:-$KEEP_RUNS}"
+  find "$OUTPUT" -maxdepth 1 -name "$pattern" -type f -print0 2>/dev/null \
+    | sort -zr \
+    | tail -z -n "+$((keep + 1))" \
+    | xargs -0 -r rm -f
 }
 prune_old "links_*.csv"
 prune_old "cameras_*.csv"
@@ -93,8 +100,10 @@ prune_old "report_*.md"
 
 # Camera stills are far larger than the CSVs, so keep only the most recent sets.
 if [ -d "$OUTPUT/stills" ]; then
-  ls -1d "$OUTPUT"/stills/*/ 2>/dev/null | sort -r | tail -n +5 \
-    | while read -r stale; do rm -rf "$stale"; done
+  find "$OUTPUT/stills" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null \
+    | sort -zr \
+    | tail -z -n +5 \
+    | xargs -0 -r rm -rf
 fi
 
 cat > "$WORKTREE/README.md" <<'MD'

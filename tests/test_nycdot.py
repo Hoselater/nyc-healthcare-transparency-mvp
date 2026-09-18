@@ -28,7 +28,14 @@ from etl.nycdot.analyze import (
 )
 from etl.nycdot.cameras import normalise_camera, nearest_cameras, tag_region
 from etl.nycdot.cli import history_file, prune_history, read_history, write_csv
-from etl.nycdot.speeds import normalise_link, parse_feed_timestamp, usable
+from etl.nycdot.speeds import (
+    feed_age_minutes,
+    latest_per_link,
+    mark_staleness,
+    normalise_link,
+    parse_feed_timestamp,
+    usable,
+)
 
 
 class TestGeography(unittest.TestCase):
@@ -178,12 +185,72 @@ class TestSpeedLinks(unittest.TestCase):
         link = normalise_link(_link_record(travel_time="300"))
         self.assertIsNotNone(link.implied_speed_mph)
 
-    def test_zero_and_stale_readings_are_not_usable(self):
+    def test_zero_and_lagging_readings_are_not_usable(self):
         fresh = normalise_link(_link_record())
         zero = normalise_link(_link_record(link_id="2", speed="0"))
-        stale = normalise_link(_link_record(link_id="3", data_as_of=_feed_time(240)))
-        self.assertTrue(stale.is_stale)
-        self.assertEqual([link.link_id for link in usable([fresh, zero, stale])], ["1000"])
+        lagging = normalise_link(_link_record(link_id="3", data_as_of=_feed_time(240)))
+        mark_staleness([fresh, zero, lagging])
+        self.assertTrue(lagging.is_stale)
+        self.assertFalse(fresh.is_stale)
+        self.assertEqual([link.link_id for link in usable([fresh, zero, lagging])], ["1000"])
+
+
+class TestArchiveSemantics(unittest.TestCase):
+    """The published dataset is an archive, not a snapshot of now."""
+
+    def _observation(self, link_id, minutes_ago, speed):
+        return normalise_link(
+            _link_record(
+                link_id=link_id, speed=str(speed), data_as_of=_feed_time(minutes_ago)
+            )
+        )
+
+    def test_only_the_newest_observation_of_each_link_survives(self):
+        # The archive holds every past reading of the same link. Averaging over
+        # all of them would describe last month, not this minute.
+        observations = [
+            self._observation("A", 2, 10),
+            self._observation("A", 60, 45),
+            self._observation("A", 1440, 50),
+            self._observation("B", 3, 30),
+        ]
+        links = {link.link_id: link for link in latest_per_link(observations)}
+        self.assertEqual(len(links), 2)
+        self.assertEqual(links["A"].speed_mph, 10.0)
+
+    def test_a_row_with_no_timestamp_loses_to_one_that_has_one(self):
+        undated = normalise_link(_link_record(link_id="A", speed="99", data_as_of=""))
+        dated = self._observation("A", 5, 20)
+        for order in ([undated, dated], [dated, undated]):
+            with self.subTest(order=[link.speed_mph for link in order]):
+                self.assertEqual(latest_per_link(order)[0].speed_mph, 20.0)
+
+    def test_staleness_is_measured_against_the_feed_not_the_clock(self):
+        # The whole feed is four hours behind, but the links agree with each
+        # other. Branding them all stale would throw away the only data there is.
+        links = [
+            self._observation("A", 240, 30),
+            self._observation("B", 242, 28),
+            self._observation("C", 245, 25),
+        ]
+        feed_age = mark_staleness(links)
+        self.assertAlmostEqual(feed_age, 240, delta=1)
+        self.assertEqual([link.is_stale for link in links], [False, False, False])
+        self.assertEqual(len(usable(links)), 3)
+
+    def test_a_single_lagging_sensor_is_still_caught(self):
+        links = [
+            self._observation("A", 2, 30),
+            self._observation("B", 3, 28),
+            self._observation("C", 120, 25),
+        ]
+        mark_staleness(links)
+        self.assertEqual([link.link_id for link in links if link.is_stale], ["C"])
+
+    def test_feed_age_is_the_freshest_reading(self):
+        links = [self._observation("A", 45, 30), self._observation("B", 5, 28)]
+        self.assertAlmostEqual(feed_age_minutes(links), 5, delta=1)
+        self.assertIsNone(feed_age_minutes([]))
 
 
 class TestCameras(unittest.TestCase):

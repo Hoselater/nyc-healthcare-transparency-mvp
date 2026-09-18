@@ -5,24 +5,32 @@ focused on the East Side of Manhattan. It shares this repository but not its
 pipeline: nothing here touches Postgres, SPARCS, or the healthcare app, and it
 needs no credentials.
 
-## Status: no live data has been collected yet
+## Status
 
-The code was written and tested in a sandbox whose egress policy blocks every
-NYC and New York State data host, so **no real reading has ever passed through
-it**. Every number you have seen from it so far came from fixtures. The blocked
-hosts were:
+The first live run happened on 18 September 2026, from GitHub Actions. The
+camera feed worked first time: 979 cameras, 183 of them on the East Side. The
+speed feed did not, and what it taught us is written into the code.
 
-| Host | Feed | Result |
-| --- | --- | --- |
-| `webcams.nyctmc.org` | camera inventory and stills | `403` at the proxy, CONNECT refused |
-| `data.cityofnewyork.us` | live link speeds (`i4gi-tjb9`) | `403` at the proxy, CONNECT refused |
-| `data.ny.gov`, `511ny.org` | state alternatives | `403` at the proxy, CONNECT refused |
+This code still cannot be run from every environment. The sandbox it was
+developed in blocks every NYC and New York State data host at its egress proxy,
+so `webcams.nyctmc.org` and `data.cityofnewyork.us` both refuse the connection
+before TLS. GitHub's runners have ordinary internet access, which is why
+collection lives there.
 
-Run it from a machine with ordinary internet access and it will collect real
-data. Until someone does, treat the field names below as what the feeds
-published as of the last time they were documented, and read the first run's
-warnings carefully: the normalisers are written to tolerate renamed and
-malformed fields rather than to assume the documentation is current.
+### What the first live run found
+
+The speed dataset is **an archive, not a snapshot**. It holds one row per link
+per observation and keeps growing, and Socrata returns rows in no defined order
+unless asked. The first run therefore pulled a million rows that happened to be
+an arbitrary slice of the past few months, found a median age of two weeks, and
+correctly concluded it had nothing current to say. The fix is to ask for the
+newest rows explicitly and keep only the most recent reading of each link.
+
+Staleness moved with it. Measuring each reading against the wall clock means
+that when the publisher falls behind, every link is branded stale and the
+snapshot reports nothing at all. A sensor is now stale when it lags *the rest of
+the feed*, and how far behind the feed itself is runs at the top of the report
+as a separate fact, because that says nothing about traffic.
 
 ## The two feeds
 
@@ -46,6 +54,10 @@ wrong answer:
   every reading looks four or five hours stale. Readings that come out in the
   future are flagged, because that is what a change of convention would look
   like.
+* **The publisher sometimes falls behind.** A sensor counts as stale when it
+  lags the rest of the feed, not the wall clock, so a feed running an hour late
+  still yields a usable picture of that hour. How far behind the feed is appears
+  at the top of the report as its own statement.
 * **There is no published free-flow speed**, so congestion has no denominator
   unless you supply one. See below.
 
@@ -265,7 +277,7 @@ days, which is well past what a baseline needs.
 python -m unittest discover -s tests -t .
 ```
 
-Seventy-seven offline tests, no internet access needed. The unit tests cover the cases
+Eighty-two offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The

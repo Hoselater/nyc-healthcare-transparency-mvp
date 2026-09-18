@@ -30,12 +30,12 @@ import logging
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence
 
 from etl.nycdot import geo
 from etl.nycdot.cameras import Camera, nearest_cameras
-from etl.nycdot.speeds import SpeedLink, usable
+from etl.nycdot.speeds import SpeedLink, feed_age_minutes, usable
 
 log = logging.getLogger(__name__)
 
@@ -320,6 +320,9 @@ def snapshot_quality(links: Sequence[SpeedLink]) -> dict[str, Any]:
 
     ages = [link.age_minutes for link in region_links if link.age_minutes is not None]
     future = [age for age in ages if age < -5]
+    # Measured across every link, not just this region: the publisher's lag is a
+    # property of the feed, and a region with few sensors would misreport it.
+    feed_age = feed_age_minutes(links)
     return {
         "links_citywide": len(links),
         "links_in_region": len(region_links),
@@ -329,6 +332,7 @@ def snapshot_quality(links: Sequence[SpeedLink]) -> dict[str, Any]:
         "links_without_geometry": len(no_geometry),
         "links_speed_disagrees_with_travel_time": len(disagreeing),
         "links_timestamped_in_future": len(future),
+        "feed_age_minutes": round(feed_age, 1) if feed_age is not None else None,
         "median_reading_age_minutes": round(statistics.median(ages), 1) if ages else None,
     }
 
@@ -356,11 +360,30 @@ def render_report(
     )
     lines.append("")
 
+    feed_age = quality.get("feed_age_minutes")
+    if feed_age is not None and feed_age > 60:
+        # The distinction matters: this says nothing about traffic, only about
+        # when the city last published.
+        hours = feed_age / 60
+        measured_at = (generated_at - timedelta(minutes=feed_age)).astimezone(_new_york())
+        lines.append(
+            f"> **The published feed is {hours:.1f} hours behind.** The newest "
+            f"reading available was taken at {measured_at.strftime('%H:%M')} New "
+            "York time, so everything below describes that moment, not now."
+        )
+        lines.append("")
+    elif feed_age is not None:
+        minutes = round(feed_age)
+        lines.append(
+            f"Readings are {minutes} minute{'' if minutes == 1 else 's'} old at most."
+        )
+        lines.append("")
+
     if not assessments:
         lines.append(
             "No usable link readings for this region in this snapshot. Every link "
-            "was stale, reporting zero, or outside the area. Nothing can be said "
-            "about traffic from it."
+            "was lagging the rest of the feed, reporting zero, or outside the "
+            "area. Nothing can be said about traffic from it."
         )
         lines.append("")
     else:
@@ -447,8 +470,8 @@ def render_report(
     lines.append(
         "Sensor coverage is highways and major arterials only, so a street with "
         "no segment here is unmeasured, not clear. Readings of zero are treated "
-        "as dropped sensors and excluded, as are readings older than a quarter of "
-        "an hour."
+        "as dropped sensors and excluded, as are sensors lagging more than a "
+        "quarter of an hour behind the rest of the feed."
     )
     lines.append("")
     assumed = sum(

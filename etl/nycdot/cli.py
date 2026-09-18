@@ -434,6 +434,7 @@ def command_report(args: argparse.Namespace) -> int:
             status=row.get("status") or None,
             data_as_of_local=row.get("data_as_of_local") or None,
             age_minutes=number("age_minutes"),
+            lag_minutes=number("lag_minutes"),
             is_stale=str(row.get("is_stale", "")).lower() in {"true", "1"},
             borough=row.get("borough") or None,
             owner=row.get("owner") or None,
