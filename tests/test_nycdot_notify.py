@@ -7,7 +7,6 @@ tests are about staying silent.
 
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 import unittest
