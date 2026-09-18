@@ -335,23 +335,61 @@ class TestAnalysis(unittest.TestCase):
             row["speed_mph"] = "0"
         self.assertEqual(baselines_from_history(rows), {})
 
-    def test_corridor_summary_weights_by_length(self):
+    def test_corridor_speed_is_averaged_over_distance(self):
+        # Two miles at 10 mph takes 12 minutes; a tenth of a mile at 50 takes
+        # 7 seconds. A driver covering both averages just over 10 mph, not the
+        # 30 mph an unweighted mean of the two would report.
         long_slow = normalise_link(
             _link_record(
                 link_id="a",
                 speed="10",
-                link_points="40.7855,-73.9430 40.7742,-73.9445 40.7605,-73.9550",
+                travel_time="720",
+                link_points="40.7855,-73.9430 40.7684,-73.9530",
             )
         )
         short_fast = normalise_link(
             _link_record(
-                link_id="b", speed="50", link_points="40.7605,-73.9550 40.7600,-73.9555"
+                link_id="b",
+                speed="50",
+                travel_time="7",
+                link_points="40.7605,-73.9550 40.7593,-73.9557",
             )
         )
+        self.assertTrue(long_slow.length_is_corroborated, long_slow.length_miles)
+        self.assertTrue(short_fast.length_is_corroborated, short_fast.length_miles)
+
         rows = corridor_summary(assess_links([long_slow, short_fast]))
         fdr = next(row for row in rows if row["corridor"] == "FDR Drive")
-        # An unweighted mean would be 30 mph; the long slow segment must dominate.
-        self.assertLess(fdr["mean_speed_mph"], 15)
+        self.assertLess(fdr["mean_speed_mph"], 12)
+        self.assertEqual(fdr["links_with_trusted_length"], 2)
+        self.assertIn("by distance", fdr["basis"])
+
+    def test_a_corridor_with_no_trustworthy_length_says_so(self):
+        # Polyline and sensor distance disagree by more than a factor of two.
+        bogus = normalise_link(
+            _link_record(
+                link_id="a",
+                speed="20",
+                travel_time="30",
+                link_points="40.7855,-73.9430 40.7605,-73.9550",
+            )
+        )
+        self.assertFalse(bogus.length_is_corroborated)
+        rows = corridor_summary(assess_links([bogus]))
+        self.assertEqual(rows[0]["links_with_trusted_length"], 0)
+        self.assertIn("unweighted", rows[0]["basis"])
+        self.assertEqual(rows[0]["miles_covered"], 0)
+
+    def test_an_uncorroborated_length_publishes_no_delay(self):
+        bogus = normalise_link(
+            _link_record(
+                link_id="a",
+                speed="20",
+                travel_time="30",
+                link_points="40.7855,-73.9430 40.7605,-73.9550",
+            )
+        )
+        self.assertIsNone(assess_links([bogus])[0].delay_seconds)
 
     def test_assessment_falls_back_to_the_posted_limit(self):
         assessments = assess_links([normalise_link(_link_record(speed="10"))])
@@ -527,3 +565,41 @@ class TestWatermarkQuery(unittest.TestCase):
 
         # The scan found the data the window claimed was not there.
         self.assertEqual([link.link_id for link in links], ["1000"])
+
+
+class TestReportConsistency(unittest.TestCase):
+    """The headline and the table under it must not contradict each other."""
+
+    def _link(self, link_id, speed, travel_time, points):
+        return normalise_link(
+            _link_record(
+                link_id=link_id, speed=str(speed), travel_time=str(travel_time),
+                link_points=points,
+            )
+        )
+
+    def test_nothing_flows_more_freely_than_free_flow(self):
+        # 70 mph on a road assumed to run at 50 means the assumption is low,
+        # not that the road is better than empty.
+        fast = self._link("a", 70, 51, "40.7855,-73.9430 40.7842,-73.9437")
+        assessment = assess_links([fast])[0]
+        self.assertEqual(assessment.congestion_ratio, 1.0)
+
+    def test_the_headline_is_averaged_over_distance_like_the_table(self):
+        from etl.nycdot.analyze import render_report, snapshot_quality
+
+        crawling = self._link("a", 10, 720, "40.7855,-73.9430 40.7684,-73.9530")
+        brief = self._link("b", 50, 7, "40.7605,-73.9550 40.7593,-73.9557")
+        links = [crawling, brief]
+        mark_staleness(links)
+
+        assessments = assess_links(links)
+        corridors = corridor_summary(assessments)
+        report = render_report(assessments, corridors, snapshot_quality(links), [])
+
+        # Two miles crawling and a tenth of a mile clear is a slow corridor, and
+        # the headline has to say the same thing the corridor row does.
+        self.assertIn("corroborated roadway", report)
+        headline_level = report.split("the East Side is running **")[1].split("**")[0]
+        self.assertEqual(headline_level, corridors[0]["congestion_level"])
+        self.assertNotIn("150%", report)

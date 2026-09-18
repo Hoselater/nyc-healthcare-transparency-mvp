@@ -125,9 +125,25 @@ limit. Percentages built this way are indicative, not measured, and the report
 says so and counts how many segments relied on it.
 
 Bands are ratios of current speed to free flow: free flow at 80% or above,
-moderate from 60%, heavy from 40%, severe below that. Corridor figures are
-weighted by segment length, so a tenth-of-a-mile ramp cannot count as much as
-three miles of the FDR.
+moderate from 60%, heavy from 40%, severe below that. The ratio caps at 100%,
+because nothing flows more freely than free flow; a segment running above its
+reference means the assumption is too low for that road.
+
+Corridor speeds are averaged over distance rather than over segments: total
+distance divided by the time taken to cover it, which is what a driver
+experiences. A tenth-of-a-mile ramp cannot count as much as three miles of the
+FDR, and averaging the segment speeds arithmetically would overstate the result
+besides.
+
+That arithmetic needs lengths, and **the published geometry cannot be trusted
+for length**. The same stretch of FDR has been published at 4.74 miles
+northbound and 0.54 miles southbound. The feed offers an independent measure,
+since speed multiplied by travel time is the distance the sensor itself
+measured, and a length the two do not agree on within a factor of two is not
+used: no delay is shown for that segment, it is left out of the distance
+arithmetic, and the report says how many segments that affected. A corridor
+with no trustworthy length falls back to a plain average and labels itself as
+such rather than inventing a distance to weight by.
 
 ## Running it
 
@@ -292,7 +308,7 @@ days, which is well past what a baseline needs.
 python -m unittest discover -s tests -t .
 ```
 
-Ninety-five offline tests, no internet access needed. The unit tests cover the cases
+Ninety-nine offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The

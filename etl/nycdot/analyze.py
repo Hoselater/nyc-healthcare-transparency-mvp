@@ -225,16 +225,21 @@ def assess_links(
             source = f"assumed for {link.road_class}"
 
         speed = link.speed_mph or 0.0
-        # A link can exceed its own reference; the ratio is capped so one
-        # speeding sensor cannot pull a corridor average above free flow.
-        ratio = round(min(speed / reference, 1.5), 3)
+        # Traffic cannot flow more freely than free flow, so the ratio caps at
+        # one. A segment running above its assumed reference means the
+        # assumption is too low for that road, not that the road is better than
+        # empty; leaving the excess in produced corridors reported at "150% of
+        # free flow", which reads as nonsense and drags the headline upwards.
+        ratio = round(min(speed / reference, 1.0), 3)
 
+        # Delay is a distance divided by two speeds, so an uncorroborated
+        # length produces a confident, wrong number of seconds. Better to
+        # publish nothing for that segment.
         delay = None
-        if link.length_miles and reference > 0:
+        if link.length_is_corroborated and link.length_miles and reference > 0 and speed > 0:
             free_flow_seconds = (link.length_miles / reference) * 3600
-            current_seconds = (link.length_miles / speed) * 3600 if speed > 0 else None
-            if current_seconds is not None:
-                delay = round(current_seconds - free_flow_seconds, 1)
+            current_seconds = (link.length_miles / speed) * 3600
+            delay = round(current_seconds - free_flow_seconds, 1)
 
         assessments.append(
             LinkAssessment(
@@ -253,11 +258,18 @@ def assess_links(
 
 
 def corridor_summary(assessments: Sequence[LinkAssessment]) -> list[dict[str, Any]]:
-    """Roll links up to named corridors, weighting by segment length.
+    """Roll links up to named corridors.
 
-    A plain mean would let a 0.1-mile ramp count as much as three miles of the
-    FDR. Weighting by length makes the corridor figure an estimate of the speed
-    a driver actually experiences across it.
+    Speeds are averaged over distance, not over segments: a corridor's speed is
+    its total distance divided by the time taken to cover it, which is the speed
+    a driver actually experiences. Averaging the segment speeds arithmetically
+    would let a tenth-of-a-mile ramp count as much as three miles of the FDR,
+    and averaging them without dividing by time overstates the result besides.
+
+    Only segments whose length is corroborated contribute to the distance
+    arithmetic, because the published geometry is unreliable. Where a corridor
+    has none, the row falls back to a plain mean of its segment speeds and says
+    so, rather than inventing a distance to weight by.
     """
     grouped: dict[str, list[LinkAssessment]] = defaultdict(list)
     for item in assessments:
@@ -265,33 +277,45 @@ def corridor_summary(assessments: Sequence[LinkAssessment]) -> list[dict[str, An
 
     rows: list[dict[str, Any]] = []
     for corridor, items in grouped.items():
-        speeds = [item.link.speed_mph or 0.0 for item in items]
-        lengths = [item.link.length_miles or 0.0 for item in items]
-        total_length = sum(lengths)
+        trusted = [
+            item
+            for item in items
+            if item.link.length_is_corroborated
+            and item.link.length_miles
+            and (item.link.speed_mph or 0) > 0
+        ]
 
-        if total_length > 0:
-            weighted_speed = sum(
-                (item.link.speed_mph or 0.0) * (item.link.length_miles or 0.0)
-                for item in items
+        total_length = sum(item.link.length_miles or 0.0 for item in trusted)
+        total_hours = sum(
+            (item.link.length_miles or 0.0) / (item.link.speed_mph or 1.0)
+            for item in trusted
+        )
+
+        if trusted and total_hours > 0:
+            mean_speed = total_length / total_hours
+            ratio = sum(
+                item.congestion_ratio * (item.link.length_miles or 0.0) for item in trusted
             ) / total_length
-            weighted_ratio = sum(
-                item.congestion_ratio * (item.link.length_miles or 0.0) for item in items
-            ) / total_length
+            basis = f"{len(trusted)} of {len(items)} segments by distance"
         else:
-            weighted_speed = statistics.fmean(speeds) if speeds else 0.0
-            weighted_ratio = (
+            speeds = [item.link.speed_mph or 0.0 for item in items]
+            mean_speed = statistics.fmean(speeds) if speeds else 0.0
+            ratio = (
                 statistics.fmean([item.congestion_ratio for item in items]) if items else 0.0
             )
+            basis = f"{len(items)} segments, unweighted (no trustworthy lengths)"
 
         worst = min(items, key=lambda item: item.congestion_ratio)
         rows.append(
             {
                 "corridor": corridor,
                 "links": len(items),
+                "links_with_trusted_length": len(trusted),
                 "miles_covered": round(total_length, 2),
-                "mean_speed_mph": round(weighted_speed, 1),
-                "congestion_ratio": round(weighted_ratio, 3),
-                "congestion_level": classify(weighted_ratio),
+                "mean_speed_mph": round(mean_speed, 1),
+                "congestion_ratio": round(ratio, 3),
+                "congestion_level": classify(ratio),
+                "basis": basis,
                 "slowest_link": worst.link.link_name,
                 "slowest_speed_mph": worst.link.speed_mph,
                 "total_delay_seconds": round(
@@ -331,6 +355,9 @@ def snapshot_quality(links: Sequence[SpeedLink]) -> dict[str, Any]:
         "links_stale": len(stale),
         "links_without_geometry": len(no_geometry),
         "links_speed_disagrees_with_travel_time": len(disagreeing),
+        "links_with_untrustworthy_length": sum(
+            1 for link in region_links if not link.length_is_corroborated
+        ),
         "links_timestamped_in_future": len(future),
         "feed_age_minutes": round(feed_age, 1) if feed_age is not None else None,
         "median_reading_age_minutes": round(statistics.median(ages), 1) if ages else None,
@@ -387,8 +414,35 @@ def render_report(
         )
         lines.append("")
     else:
-        speeds = [item.link.speed_mph or 0 for item in assessments]
-        overall_ratio = statistics.fmean([item.congestion_ratio for item in assessments])
+        # Averaged the same way the corridor rows are: over distance where the
+        # geometry can be trusted, so the headline and the table below it cannot
+        # disagree about whether the East Side is moving.
+        trusted = [
+            item
+            for item in assessments
+            if item.link.length_is_corroborated
+            and item.link.length_miles
+            and (item.link.speed_mph or 0) > 0
+        ]
+        if trusted:
+            total_length = sum(item.link.length_miles or 0.0 for item in trusted)
+            total_hours = sum(
+                (item.link.length_miles or 0.0) / (item.link.speed_mph or 1.0)
+                for item in trusted
+            )
+            overall_speed = total_length / total_hours if total_hours else 0.0
+            overall_ratio = sum(
+                item.congestion_ratio * (item.link.length_miles or 0.0) for item in trusted
+            ) / total_length
+            measured = f"over {total_length:.1f} miles of corroborated roadway"
+        else:
+            overall_speed = statistics.fmean(
+                [item.link.speed_mph or 0 for item in assessments]
+            )
+            overall_ratio = statistics.fmean(
+                [item.congestion_ratio for item in assessments]
+            )
+            measured = "as a plain average, no segment length being trustworthy"
         worst = assessments[0]
         lines.append("## Headline")
         lines.append("")
@@ -405,9 +459,9 @@ def render_report(
         )
         lines.append(
             f"Across {len(assessments)} measured segments the East Side is running "
-            f"**{classify(overall_ratio)}**, averaging "
-            f"{statistics.fmean(speeds):.1f} mph, which is {overall_ratio:.0%} of "
-            f"free flow judged against {basis}."
+            f"**{classify(overall_ratio)}**, averaging {overall_speed:.1f} mph "
+            f"{measured}, which is {overall_ratio:.0%} of free flow judged against "
+            f"{basis}."
         )
         lines.append("")
         lines.append(
@@ -420,24 +474,29 @@ def render_report(
     if corridors:
         lines.append("## Corridors, worst first")
         lines.append("")
-        lines.append("| Corridor | Level | Mean speed (mph) | % of free flow | Links | Miles |")
-        lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
+        lines.append("| Corridor | Level | Mean speed (mph) | % of free flow | Based on |")
+        lines.append("| --- | --- | ---: | ---: | --- |")
         for row in corridors:
             lines.append(
                 f"| {row['corridor']} | {row['congestion_level']} | "
                 f"{row['mean_speed_mph']:.1f} | {row['congestion_ratio']:.0%} | "
-                f"{row['links']} | {row['miles_covered']:.1f} |"
+                f"{row['basis']} |"
             )
         lines.append("")
 
     if assessments:
         lines.append(f"## Slowest {min(worst_n, len(assessments))} segments")
         lines.append("")
-        lines.append("| Segment | Speed (mph) | % of free flow | Delay (s) | Camera |")
+        lines.append("| Segment | Speed (mph) | % of free flow | Delay | Camera |")
         lines.append("| --- | ---: | ---: | ---: | --- |")
         for item in assessments[:worst_n]:
             camera = item.cameras[0][0].name if item.cameras else "none within half a mile"
-            delay = f"{item.delay_seconds:.0f}" if item.delay_seconds is not None else "n/a"
+            if item.delay_seconds is None:
+                delay = "n/a"
+            elif abs(item.delay_seconds) >= 120:
+                delay = f"{item.delay_seconds / 60:.0f} min"
+            else:
+                delay = f"{item.delay_seconds:.0f} s"
             lines.append(
                 f"| {item.link.link_name or item.link.link_id} | "
                 f"{item.link.speed_mph:.1f} | {item.congestion_ratio:.0%} | "
@@ -467,6 +526,16 @@ def render_report(
     for key, value in quality.items():
         lines.append(f"| {key.replace('_', ' ')} | {value if value is not None else 'n/a'} |")
     lines.append("")
+    untrustworthy = quality.get("links_with_untrustworthy_length") or 0
+    if untrustworthy:
+        lines.append(
+            f"The published geometry disagrees with the sensors' own distance on "
+            f"{untrustworthy} segment(s), so no delay is shown for those and they "
+            "are left out of the distance arithmetic. The same stretch of road has "
+            "been published at nine times the length in one direction as the other."
+        )
+        lines.append("")
+
     lines.append(
         "Sensor coverage is highways and major arterials only, so a street with "
         "no segment here is unmeasured, not clear. Readings of zero are treated "

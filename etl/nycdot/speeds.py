@@ -19,6 +19,11 @@ Caveats that matter when reading the numbers:
 
 * Coverage is highways and major arterials. There is no link on most avenue
   blocks, so an absent street is not a quiet street.
+* **The polyline geometry cannot be trusted for length.** The same stretch of
+  road has been seen published at 4.74 miles northbound and 0.54 miles
+  southbound. The feed offers an independent measure, since speed multiplied by
+  travel time is the length as the sensor itself experienced it, and any length
+  the two do not agree on is treated as unusable rather than published.
 * ``speed`` is the sensor's current average, in miles per hour. Zero almost
   always means a dropped sensor rather than stopped traffic, so zeroes are
   flagged and excluded from averages instead of being read as gridlock.
@@ -97,6 +102,8 @@ class SpeedLink:
     borough: str | None
     owner: str | None
     length_miles: float | None
+    sensor_length_miles: float | None
+    length_is_corroborated: bool
     implied_speed_mph: float | None
     latitude: float | None
     longitude: float | None
@@ -195,13 +202,24 @@ def normalise_link(
     travel_time = _as_float(values["travel_time_seconds"])
     length_miles = polyline_length_miles(points)
 
-    # An independent read on the same segment: the sensor reports both a speed
-    # and a travel time, and the polyline gives a length. When the two disagree
-    # badly, one of them is wrong, and the report says so rather than averaging
-    # a bad number into a corridor.
+    # An independent read on the same segment. The sensor reports both a speed
+    # and a travel time, whose product is the distance it actually measured;
+    # the polyline gives a second, geometric length. When the two disagree the
+    # geometry is wrong often enough that neither may be published: a length
+    # nothing corroborates goes on to distort delays, corridor mileage and the
+    # distance-weighting of every corridor average.
     implied_speed = None
     if length_miles and travel_time and travel_time > 0:
         implied_speed = round(length_miles / (travel_time / 3600.0), 1)
+
+    sensor_length = None
+    if speed and speed > 0 and travel_time and travel_time > 0:
+        sensor_length = round(speed * (travel_time / 3600.0), 4)
+
+    corroborated = False
+    if length_miles and sensor_length:
+        ratio = length_miles / sensor_length
+        corroborated = 0.5 <= ratio <= 2.0
 
     corridor = geo.corridor_for(link_name)
     in_region = False
@@ -229,6 +247,8 @@ def normalise_link(
         borough=str(values["borough"]).strip() if values["borough"] not in (None, "") else None,
         owner=str(values["owner"]).strip() if values["owner"] not in (None, "") else None,
         length_miles=length_miles,
+        sensor_length_miles=sensor_length,
+        length_is_corroborated=corroborated,
         implied_speed_mph=implied_speed,
         latitude=latitude,
         longitude=longitude,

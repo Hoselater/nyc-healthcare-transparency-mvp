@@ -455,6 +455,9 @@ def command_report(args: argparse.Namespace) -> int:
             borough=row.get("borough") or None,
             owner=row.get("owner") or None,
             length_miles=number("length_miles"),
+            sensor_length_miles=number("sensor_length_miles"),
+            length_is_corroborated=str(row.get("length_is_corroborated", "")).lower()
+            in {"true", "1"},
             implied_speed_mph=number("implied_speed_mph"),
             latitude=number("latitude"),
             longitude=number("longitude"),
