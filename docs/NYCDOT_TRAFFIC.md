@@ -123,7 +123,7 @@ python -m etl.nycdot --all-nyc snapshot  # citywide, no East Side filter
 
 Output lands in `exports/nycdot/` (git-ignored): a timestamped CSV of segments,
 one of cameras, one of assessed segments with congestion verdicts and the
-nearest camera, a corridor summary, a Markdown report, and `speed_history.csv`,
+nearest camera, a corridor summary, a Markdown report, and `history/<date>.csv`,
 which every run appends to.
 
 **Run `watch` first.** A single snapshot can only use posted-limit assumptions.
@@ -135,13 +135,66 @@ An app token is optional and raises Socrata's rate limit. Register free at
 `data.cityofnewyork.us` and set `NYC_OPEN_DATA_APP_TOKEN`; it is sent as a
 header, not a query parameter, so it stays out of logs.
 
+## Running it without a computer
+
+You do not need a machine of your own to collect this. `.github/workflows/nyc-traffic.yml`
+runs the scraper on GitHub's runners, which have ordinary internet access, every
+twenty minutes. It publishes to a branch called `traffic-data`, so the project's
+own history stays readable.
+
+**The workflow only fires once it is on the default branch.** GitHub runs
+scheduled workflows from the default branch alone, so until this is merged to
+`master` the schedule does nothing. Merging it is what switches collection on.
+
+Read the latest snapshot on a phone by bookmarking this, which always shows the
+most recent one:
+
+```
+https://github.com/<owner>/<repo>/blob/traffic-data/traffic_data/latest_report.md
+```
+
+GitHub renders the Markdown, so it is readable on a phone screen without
+downloading anything. To force a collection between scheduled runs, open the
+Actions tab, pick "NYC East Side traffic", and use "Run workflow"; that also
+takes an option to capture camera stills, which the scheduled runs skip because
+JPEGs every twenty minutes would bloat the repository.
+
+What the schedule is worth: a single snapshot can only compare against posted
+limits, but twenty-minute sampling gives every segment a baseline measured
+across the day within about six hours of starting. From then on the percentages
+are measured rather than assumed.
+
+Two limits worth knowing. GitHub's scheduler is best-effort, so runs are delayed
+or skipped when the service is busy; missed runs only mean fewer samples. And
+GitHub disables schedules on repositories with no activity for sixty days, which
+a single commit resets.
+
+### Where this can run
+
+| Where | Works? |
+| --- | --- |
+| GitHub Actions | Yes, and it is the only option that collects unattended |
+| Home computer | Yes, Python 3.9 or newer and `pip install requests` |
+| Phone, reading results | Yes, the report renders in a browser |
+| Phone, running the scraper | Possible via a terminal app, but a watch loop needs a machine that stays awake |
+| This sandbox | No, the data hosts are blocked by its network policy |
+
+## Retention
+
+History is partitioned by day: one append-only file per date under
+`traffic_data/history/`. Retention deletes whole day files rather than rewriting
+live ones, so a run that dies midway cannot leave a truncated history behind,
+and git stores an append rather than a fresh copy of a growing file every twenty
+minutes. `--history-days` sets the window; the scheduled collector keeps three
+days, which is well past what a baseline needs.
+
 ## Tests
 
 ```bash
 python -m unittest discover -s tests -t .
 ```
 
-Forty offline tests, no internet access needed. The unit tests cover the cases
+Forty-five offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The

@@ -177,7 +177,7 @@ class TestSnapshotCommand(unittest.TestCase):
             with self.subTest(prefix=prefix):
                 self.assertTrue(list(directory.glob(f"{prefix}*")), prefix)
         self.assertTrue((directory / "latest_report.md").exists())
-        self.assertTrue((directory / "speed_history.csv").exists())
+        self.assertTrue(list((directory / "history").glob("*.csv")))
 
     def test_snapshot_keeps_only_east_side_records(self):
         directory = self._run("snapshot")

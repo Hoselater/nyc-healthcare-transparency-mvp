@@ -1,0 +1,80 @@
+# Collect NYC DOT traffic for the East Side of Manhattan on a schedule.
+#
+# This exists because the feeds cannot be reached from every environment, and
+# because a single snapshot cannot measure congestion: free-flow baselines need
+# readings spread across the day, which means collecting unattended. GitHub's
+# runners have ordinary internet access, so they can do both.
+#
+# Results are published to the `traffic-data` branch, not this one. Read the
+# latest one at:
+#   traffic_data/latest_report.md on branch traffic-data
+#
+# Note: scheduled workflows only run from the repository's DEFAULT branch, so
+# this file has no effect until it is merged to master. GitHub also disables
+# schedules on repositories with no activity for 60 days, and its scheduler is
+# best-effort: runs are delayed or dropped when the service is busy. Missed runs
+# only mean fewer samples; they do not break the baselines.
+
+name: NYC East Side traffic
+
+on:
+  schedule:
+    # Every 20 minutes. The feed refreshes about once a minute, so this is a
+    # sampling choice, not a limit: 72 readings a day per segment is plenty to
+    # estimate a free-flow speed from.
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "Also capture a still from every East Side camera"
+        type: boolean
+        default: false
+      history_days:
+        description: "Days of readings to retain"
+        type: string
+        default: "3"
+
+permissions:
+  contents: write
+
+# Overlapping runs would race to push the same branch. Queue instead, and never
+# cancel a run that may already have committed.
+concurrency:
+  group: nyc-traffic-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the collector
+        uses: actions/checkout@v4
+        with:
+          # Full history: the publish step adds a linked worktree for the data
+          # branch, which a shallow clone makes awkward.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # The scraper deliberately depends on nothing but requests, so this does
+        # not pull in the healthcare pipeline's database and dataframe stack.
+        run: pip install --quiet --disable-pip-version-check requests
+
+      - name: Run the tests
+        # Cheap, offline, and it stops a broken collector from publishing a
+        # report full of plausible-looking nonsense.
+        run: python -m unittest discover -s tests -t . --quiet
+
+      - name: Collect a snapshot and publish it
+        env:
+          DATA_BRANCH: traffic-data
+          HISTORY_DAYS: ${{ inputs.history_days || '3' }}
+          IMAGES: ${{ inputs.images || false }}
+          KEEP_RUNS: "72"
+        run: bash .github/scripts/collect_traffic.sh

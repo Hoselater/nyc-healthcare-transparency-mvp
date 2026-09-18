@@ -27,7 +27,7 @@ from etl.nycdot.analyze import (
     percentile,
 )
 from etl.nycdot.cameras import normalise_camera, nearest_cameras, tag_region
-from etl.nycdot.cli import write_csv
+from etl.nycdot.cli import history_file, prune_history, read_history, write_csv
 from etl.nycdot.speeds import normalise_link, parse_feed_timestamp, usable
 
 
@@ -304,6 +304,52 @@ class TestCsvWriting(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
             self.assertEqual([row["a"] for row in rows], ["1", "3"])
             self.assertNotIn("c", rows[0])
+
+    def test_retention_deletes_whole_day_files(self):
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            for days_ago in (0, 1, 30):
+                day = now - timedelta(days=days_ago)
+                write_csv(
+                    history_file(output, day),
+                    [{"link_id": "a", "observed_at_utc": day.isoformat()}],
+                )
+            self.assertEqual(prune_history(output, days=7), 1)
+            remaining = sorted(p.name for p in (output / "history").glob("*.csv"))
+            self.assertEqual(len(remaining), 2)
+            self.assertNotIn((now - timedelta(days=30)).strftime("%Y-%m-%d.csv"), remaining)
+
+    def test_retention_ignores_files_it_cannot_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_csv(output / "history" / "notes.csv", [{"link_id": "a"}])
+            self.assertEqual(prune_history(output, days=1), 0)
+            self.assertTrue((output / "history" / "notes.csv").exists())
+
+    def test_retention_is_a_no_op_when_disabled_or_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            write_csv(history_file(output), [{"link_id": "a"}])
+            self.assertEqual(prune_history(output, days=0), 0)
+            self.assertEqual(prune_history(Path(directory) / "nowhere", days=7), 0)
+
+    def test_history_reads_day_files_and_the_legacy_file_together(self):
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            # A history written by an earlier version must not be orphaned.
+            write_csv(output / "speed_history.csv", [{"link_id": "old"}])
+            write_csv(history_file(output, now), [{"link_id": "today"}])
+            write_csv(history_file(output, now - timedelta(days=1)), [{"link_id": "yesterday"}])
+            self.assertEqual(
+                sorted(row["link_id"] for row in read_history(output)),
+                ["old", "today", "yesterday"],
+            )
+
+    def test_the_day_file_is_named_for_its_date(self):
+        moment = datetime(2026, 9, 18, 4, 30, tzinfo=timezone.utc)
+        self.assertEqual(history_file(Path("/out"), moment).name, "2026-09-18.csv")
 
     def test_writing_no_rows_is_not_an_error(self):
         with tempfile.TemporaryDirectory() as directory:

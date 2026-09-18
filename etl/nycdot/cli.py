@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -38,7 +38,13 @@ from etl.nycdot.speeds import SPEEDS_URL, fetch_speeds
 log = logging.getLogger("etl.nycdot")
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "exports" / "nycdot"
-HISTORY_FILENAME = "speed_history.csv"
+# History is partitioned by day and only ever appended to. One ever-growing
+# file would be rewritten in full on every run, and a scheduled collector
+# committing that to git stores a fresh copy of the whole thing every quarter of
+# an hour. Day files append cleanly, compress against their own previous
+# version, and let retention delete whole files instead of rewriting live ones.
+HISTORY_DIRNAME = "history"
+LEGACY_HISTORY_FILENAME = "speed_history.csv"
 
 
 def write_csv(path: Path, rows: Sequence[dict[str, Any]], *, append: bool = False) -> Path:
@@ -83,11 +89,59 @@ def write_csv(path: Path, rows: Sequence[dict[str, Any]], *, append: bool = Fals
     return path
 
 
-def read_history(path: Path) -> list[dict[str, Any]]:
+def history_file(output: Path, when: datetime | None = None) -> Path:
+    """The day file the current run appends to."""
+    when = when or datetime.now(timezone.utc)
+    return output / HISTORY_DIRNAME / f"{when.strftime('%Y-%m-%d')}.csv"
+
+
+def _read_csv(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def prune_history(output: Path, days: float) -> int:
+    """Delete history day files older than ``days``. Returns the number removed.
+
+    Retention deletes whole files rather than rewriting live ones, so a run that
+    dies midway can never leave a truncated history behind. Baselines only need
+    a recent window anyway: a free-flow speed measured last spring describes a
+    road that may since have been resurfaced or given a bus lane.
+    """
+    if days <= 0:
+        return 0
+
+    directory = output / HISTORY_DIRNAME
+    if not directory.exists():
+        return 0
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+    removed = 0
+    for path in sorted(directory.glob("*.csv")):
+        try:
+            day = datetime.strptime(path.stem, "%Y-%m-%d").date()
+        except ValueError:
+            # Not a day file; leave anything unrecognised alone.
+            continue
+        if day < cutoff:
+            path.unlink()
+            removed += 1
+
+    if removed:
+        log.info("Pruned %d history day file(s) older than %g days", removed, days)
+    return removed
+
+
+def read_history(output: Path) -> list[dict[str, Any]]:
+    """Every retained reading, day files plus any legacy single-file history."""
+    rows = _read_csv(output / LEGACY_HISTORY_FILENAME)
+    directory = output / HISTORY_DIRNAME
+    if directory.exists():
+        for path in sorted(directory.glob("*.csv")):
+            rows.extend(_read_csv(path))
+    return rows
 
 
 def _timestamp() -> str:
@@ -154,7 +208,8 @@ def command_speeds(args: argparse.Namespace) -> int:
     stamp = _timestamp()
     rows = [link.as_row() for link in region_links]
     write_csv(args.output / f"links_{stamp}.csv", rows)
-    write_csv(args.output / HISTORY_FILENAME, rows, append=True)
+    write_csv(history_file(args.output), rows, append=True)
+    prune_history(args.output, args.history_days)
 
     quality = snapshot_quality(links)
     print(f"{len(region_links)} links in scope, {quality['links_used']} usable")
@@ -173,13 +228,14 @@ def command_snapshot(args: argparse.Namespace) -> int:
     stamp = _timestamp()
     rows = [link.as_row() for link in region_links]
     write_csv(args.output / f"links_{stamp}.csv", rows)
-    write_csv(args.output / HISTORY_FILENAME, rows, append=True)
+    write_csv(history_file(args.output), rows, append=True)
     write_csv(
         args.output / f"cameras_{stamp}.csv",
         [camera.as_row() for camera in cameras if camera.in_region or not _region(args)],
     )
+    prune_history(args.output, args.history_days)
 
-    baselines = baselines_from_history(read_history(args.output / HISTORY_FILENAME))
+    baselines = baselines_from_history(read_history(args.output))
     assessments = assess_links(region_links, cameras, baselines)
     corridors = corridor_summary(assessments)
     quality = snapshot_quality(links)
@@ -231,7 +287,8 @@ def command_watch(args: argparse.Namespace) -> int:
         try:
             links, region_links, _ = _collect(args, session, cameras=[])
             rows = [link.as_row() for link in region_links]
-            write_csv(args.output / HISTORY_FILENAME, rows, append=True)
+            write_csv(history_file(args.output), rows, append=True)
+            prune_history(args.output, args.history_days)
             pulls += 1
             speeds = [link.speed_mph for link in region_links if link.speed_mph]
             mean = sum(speeds) / len(speeds) if speeds else 0
@@ -253,16 +310,16 @@ def command_watch(args: argparse.Namespace) -> int:
                 print("\nStopped.")
                 break
 
-    print(f"{pulls} pulls written to {args.output / HISTORY_FILENAME}")
+    print(f"{pulls} pulls written to {args.output / HISTORY_DIRNAME}")
     return 0
 
 
 def command_report(args: argparse.Namespace) -> int:
     """Rebuild a report from the most recent rows already in the history file."""
-    history = read_history(args.output / HISTORY_FILENAME)
+    history = read_history(args.output)
     if not history:
         print(
-            f"No history at {args.output / HISTORY_FILENAME}. Run "
+            f"No history under {args.output / HISTORY_DIRNAME}. Run "
             "'python -m etl.nycdot snapshot' first.",
             file=sys.stderr,
         )
@@ -344,6 +401,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--speeds-url", default=SPEEDS_URL, help=argparse.SUPPRESS)
     parser.add_argument("--cameras-url", default=CAMERA_LIST_URL, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--history-days",
+        type=float,
+        default=0,
+        help="drop history rows older than this many days (0 = keep everything)",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="debug logging")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
