@@ -1,0 +1,2 @@
+corridor,links,miles_covered,mean_speed_mph,congestion_ratio,congestion_level,slowest_link,slowest_speed_mph,total_delay_seconds
+FDR Drive,6,7.37,13.1,0.262,severe,FDR N Catherine Slip - 25th St,3.72,4535.6
