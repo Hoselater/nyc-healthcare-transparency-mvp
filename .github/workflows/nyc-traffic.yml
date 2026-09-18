@@ -1,33 +1,19 @@
-# Collect NYC DOT traffic for the East Side of Manhattan on a schedule.
+# Collect NYC DOT traffic for the East Side of Manhattan, on request.
 #
 # This exists because the feeds cannot be reached from every environment, and
 # because a single snapshot cannot measure congestion: free-flow baselines need
-# readings spread across the day, which means collecting unattended. GitHub's
-# runners have ordinary internet access, so they can do both.
+# readings spread across hours. GitHub's runners have ordinary internet access,
+# so they can do both.
 #
 # Results are published to the `traffic-data` branch, not this one. Read the
-# latest one at:
-#   traffic_data/latest_report.md on branch traffic-data
+# latest one at traffic_data/latest_report.md on that branch.
 #
-# Note: scheduled workflows only run from the repository's DEFAULT branch, so
-# this file has no effect until it is merged to master. GitHub also disables
-# schedules on repositories with no activity for 60 days, and its scheduler is
-# best-effort: runs are delayed or dropped when the service is busy. Missed runs
-# only mean fewer samples; they do not break the baselines.
-
-name: NYC East Side traffic
+# MANUAL ONLY. There is no schedule. Nothing here starts on its own and nothing
+# collects unless someone asks it to from the Actions tab. run_for_hours=0, the
+# default, takes one snapshot and stops; a larger value keeps collecting for
+# that many hours, and can be cancelled at any time from the run's page.
 
 on:
-  schedule:
-    # Every 20 minutes, deliberately off the hour. The feed refreshes about once
-    # a minute, so the interval is a sampling choice, not a limit: 72 readings a
-    # day per segment is ample for estimating a free-flow speed.
-    #
-    # The offset minutes matter. GitHub's scheduler is best-effort and is
-    # heaviest at the top of the hour, which is exactly where "*/20" lands (:00,
-    # :20, :40). That schedule missed its first three slots here without firing
-    # once. Odd minutes nobody else picks avoid the crowd.
-    - cron: "7,27,47 * * * *"
   workflow_dispatch:
     inputs:
       run_for_hours:

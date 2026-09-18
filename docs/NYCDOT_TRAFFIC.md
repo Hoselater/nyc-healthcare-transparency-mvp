@@ -173,72 +173,44 @@ header, not a query parameter, so it stays out of logs.
 
 ## Running it without a computer
 
-You do not need a machine of your own to collect this. `.github/workflows/nyc-traffic.yml`
-runs the scraper on GitHub's runners, which have ordinary internet access, every
-twenty minutes. It publishes to a branch called `traffic-data`, so the project's
-own history stays readable.
+The collector runs on GitHub's runners, which have ordinary internet access, and
+publishes to a branch called `traffic-data` so the project's own history stays
+readable.
 
-**The workflow only fires once it is on the default branch.** GitHub runs
-scheduled workflows from the default branch alone, so until this is merged to
-`master` the schedule does nothing. Merging it is what switches collection on.
+**It is manual only. There is no schedule, and nothing starts on its own.** To
+collect, open the Actions tab, pick "NYC East Side traffic", and choose "Run
+workflow". The default takes one snapshot and stops. Setting `run_for_hours`
+keeps it collecting every twenty minutes for that many hours, up to five and a
+half, and any run can be cancelled from its own page at any time.
 
-Read the latest snapshot on a phone by bookmarking this, which always shows the
-most recent one:
+Read the result on a phone by bookmarking this, which always shows the most
+recent snapshot:
 
 ```
 https://github.com/<owner>/<repo>/blob/traffic-data/traffic_data/latest_report.md
 ```
 
-GitHub renders the Markdown, so it is readable on a phone screen without
-downloading anything. To force a collection between scheduled runs, open the
-Actions tab, pick "NYC East Side traffic", and use "Run workflow"; that also
-takes an option to capture camera stills, which the scheduled runs skip because
-JPEGs every twenty minutes would bloat the repository.
+GitHub renders the Markdown, so it is readable on a phone without downloading
+anything.
 
-What the schedule is worth: a single snapshot can only compare against posted
-limits, but twenty-minute sampling gives every segment a baseline measured
-across the day within about six hours of starting. From then on the percentages
-are measured rather than assumed.
+### Why there is no schedule
 
-Two limits worth knowing. GitHub's scheduler is best-effort, so runs are delayed
-or skipped when the service is busy; missed runs only mean fewer samples. And
-GitHub disables schedules on repositories with no activity for sixty days, which
-a single commit resets.
-
-### The schedule has never fired
-
-Six consecutive slots passed without a single scheduled run, across two
-different cron expressions, with the workflow `state: active` and its syntax
-valid on the default branch the whole time:
+There was one, and it never fired. Six consecutive slots passed without a single
+scheduled run, across two different cron expressions, with the workflow
+`state: active` and its syntax valid on the default branch throughout:
 
 ```
 03:40  04:00  04:20     cron */20
 04:47  05:07  05:27     cron 7,27,47, moved off the hour deliberately
 ```
 
-GitHub's queue is heaviest on the hour, which is where an every-twenty-minutes
-schedule naturally lands, so the second expression avoids it. That changed
-nothing. The cron is left in place in case it starts working, but nothing here
-depends on it.
+It has since been removed outright rather than left in as clutter that might
+start something unattended. Collection is something you ask for.
 
-### Collecting for hours from one click
-
-Because a lone snapshot can only be compared against a posted speed limit, and
-baselines need observations spread across the day, a manual start can collect
-continuously instead of once. In the Actions tab, choose "Run workflow" and set
-**run_for_hours** to 5. It then collects every twenty minutes for five hours,
-publishing each time, and a single failed collection does not end the run: the
-feed intermittently answers with nothing, which is a reason to try again in
-twenty minutes rather than to stop. The run goes red only if every collection
-in it failed.
-
-Five and a half hours is the ceiling, because a hosted job is killed at six.
-
-It cannot restart itself. A job can re-dispatch a workflow through the API, but
-GitHub deliberately ignores `workflow_dispatch` events authenticated with the
-built-in `GITHUB_TOKEN`, precisely to stop workflows looping forever. Making it
-perpetual needs a personal access token, which only the repository owner can
-create.
+**What this costs you:** a single snapshot can only be compared against a posted
+speed limit. The measured free-flow baselines the report prefers need readings
+spanning six hours, so they only appear if you choose to collect for that long.
+Until then the percentages are labelled as assumptions, which is what they are.
 
 ### Where this can run
 
