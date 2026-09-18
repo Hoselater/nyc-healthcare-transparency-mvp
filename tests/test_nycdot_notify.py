@@ -149,6 +149,45 @@ class TestAlertRules(unittest.TestCase):
         self.assertGreater(severe[0].priority, heavy[0].priority)
 
 
+class TestFeedOutage(unittest.TestCase):
+    """A feed that goes dark must never be reported as traffic clearing.
+
+    The published feed has been observed answering a valid query with nothing.
+    If that produced an all-clear, the phone would announce the jam was over
+    while it was still there, purely because the city stopped answering.
+    """
+
+    def test_an_outage_is_silence_not_an_all_clear(self):
+        now = datetime.now(timezone.utc)
+        jam = [corridor(level="severe")]
+        alerts, state = build_alerts(jam, {}, now=now)
+        self.assertEqual(len(alerts), 1)
+
+        # An hour of the feed returning nothing at all.
+        for minutes in (20, 40, 60, 80):
+            alerts, state = build_alerts([], state, now=now + timedelta(minutes=minutes))
+            self.assertEqual(alerts, [], "an outage must not alert")
+
+        # The jam is still remembered, so its return is not re-announced...
+        self.assertEqual(state["FDR Drive"]["notified_level"], "severe")
+        alerts, state = build_alerts(jam, state, now=now + timedelta(minutes=100))
+        self.assertEqual(alerts, [])
+
+        # ...and only a real, sustained recovery produces the all-clear.
+        first, state = build_alerts(
+            [corridor(level="free flow", speed=48, ratio=0.96)],
+            state,
+            now=now + timedelta(minutes=120),
+        )
+        self.assertEqual(first, [])
+        second, state = build_alerts(
+            [corridor(level="free flow", speed=48, ratio=0.96)],
+            state,
+            now=now + timedelta(minutes=155),
+        )
+        self.assertEqual([alert.kind for alert in second], ["cleared"])
+
+
 class TestAlertVolume(unittest.TestCase):
     """A day of collection must produce a handful of alerts, not seventy."""
 

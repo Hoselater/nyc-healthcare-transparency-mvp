@@ -292,16 +292,18 @@ days, which is well past what a baseline needs.
 python -m unittest discover -s tests -t .
 ```
 
-Ninety-four offline tests, no internet access needed. The unit tests cover the cases
+Ninety-five offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The
 command line tests run a whole snapshot against fixtures served from a loopback
 HTTP server, checking that the region filter, the outputs, the camera join and
 the placeholder-image rejection all still work together. The alert tests are
-mostly about staying quiet: an ongoing jam, a flapping corridor and a single
-good reading must all produce silence, and a simulated day of collection must
-produce a handful of notifications rather than seventy.
+mostly about staying quiet: an ongoing jam, a flapping corridor, a single good
+reading and an hour of the feed returning nothing must all produce silence, and
+a simulated day of collection must produce a handful of notifications rather
+than seventy. A feed outage announcing that the jam is over would be the worst
+failure of the lot, so it has a test of its own.
 
 ## Terms of use
 
