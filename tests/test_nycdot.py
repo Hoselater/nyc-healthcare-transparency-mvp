@@ -427,3 +427,80 @@ class TestCsvWriting(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWatermarkQuery(unittest.TestCase):
+    """The two-step query that reads the present out of an archive."""
+
+    def setUp(self):
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from urllib.parse import parse_qs, urlparse
+
+        newest = _feed_time(2)
+        captured: list[dict] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):  # noqa: N802
+                query = parse_qs(urlparse(self.path).query)
+                captured.append(query)
+                if "$select" in query:
+                    body = json.dumps([{"newest": newest}])
+                else:
+                    body = json.dumps(
+                        [
+                            {
+                                "link_id": "1000",
+                                "speed": "12.0",
+                                "travel_time": "200",
+                                "data_as_of": newest,
+                                "link_points": "40.7855,-73.9430 40.7800,-73.9440",
+                                "link_name": "FDR Dr S B",
+                            }
+                        ]
+                    )
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self.captured = captured
+        self.newest = newest
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/speeds.json"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+    def test_it_asks_for_the_watermark_then_the_window_behind_it(self):
+        from etl.nycdot.fetch import build_session
+        from etl.nycdot.speeds import fetch_speeds
+
+        links = fetch_speeds(build_session(retries=1), url=self.url, window_minutes=30)
+
+        self.assertEqual(len(self.captured), 2)
+        self.assertIn("$select", self.captured[0])
+
+        window = self.captured[1]
+        self.assertIn("$where", window)
+        self.assertIn("data_as_of >", window["$where"][0])
+        self.assertEqual(window["$order"], ["data_as_of DESC"])
+
+        # The cutoff must be expressed in the feed's own naive local time, not
+        # UTC, or it selects the wrong four hours.
+        cutoff = window["$where"][0].split("'")[1]
+        self.assertRegex(cutoff, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+        self.assertLess(cutoff, self.newest)
+
+        self.assertEqual([link.link_id for link in links], ["1000"])
+        self.assertFalse(links[0].is_stale)

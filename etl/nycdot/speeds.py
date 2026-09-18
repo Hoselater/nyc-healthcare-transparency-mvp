@@ -58,10 +58,13 @@ SPEEDS_URL = f"https://{SOCRATA_DOMAIN}/resource/{SPEEDS_DATASET_ID}.json"
 # camelCase names, which the shared normaliser already handles.
 RAW_FEED_URL = "https://data.cityofnewyork.us/api/views/i4gi-tjb9/rows.json"
 
-# How many of the newest rows to scan. The feed carries roughly 1,500 links, so
-# this covers many observations of each; deduplication then reduces it to one
-# row per link. Scanning more costs time without finding more links.
+# Safety cap on rows fetched. The watermark query normally keeps the real number
+# in the hundreds; this only bounds the fallback path.
 MAX_RECORDS = 50_000
+# How far back from the feed's newest reading to collect. Wide enough to catch
+# links that report less often than the busiest ones, narrow enough that each
+# link contributes only a handful of rows.
+CURRENT_WINDOW_MINUTES = 30
 STALE_AFTER_MINUTES = 15
 
 FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
@@ -315,6 +318,36 @@ def mark_staleness(
     return newest
 
 
+def feed_watermark(
+    session: requests.Session,
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[datetime | None, str | None]:
+    """The newest ``data_as_of`` in the dataset, as (UTC datetime, raw string).
+
+    One aggregate query, one row back. Knowing where the data actually ends is
+    what makes it possible to ask for "the current state" of an archive that may
+    be minutes or hours behind: scanning a fixed number of newest rows instead
+    wastes most of them on repeat readings of whichever links report most often.
+    The first live run scanned fifty thousand rows to find a hundred and
+    twenty-five links.
+    """
+    payload = get_json(
+        session, url, params={"$select": "max(data_as_of) as newest"}, headers=headers
+    )
+    rows = _unwrap(payload)
+    if not rows:
+        return None, None
+    raw = rows[0].get("newest") or rows[0].get("max_data_as_of")
+    return parse_feed_timestamp(raw), (str(raw) if raw else None)
+
+
+def _local_literal(moment: datetime) -> str:
+    """Format a UTC instant as the naive New York string the feed compares against."""
+    local = moment.astimezone(NEW_YORK) if NEW_YORK else moment
+    return local.strftime("%Y-%m-%dT%H:%M:%S.000")
+
+
 def fetch_speeds(
     session: requests.Session,
     *,
@@ -322,6 +355,7 @@ def fetch_speeds(
     app_token: str | None = None,
     region: geo.Region | None = geo.EAST_SIDE,
     max_records: int = MAX_RECORDS,
+    window_minutes: float = CURRENT_WINDOW_MINUTES,
 ) -> list[SpeedLink]:
     """Pull the current state of every link, normalise it, and tag the region.
 
@@ -336,8 +370,28 @@ def fetch_speeds(
     headers = {"X-App-Token": app_token} if app_token else None
     now_utc = datetime.now(timezone.utc)
 
-    params = {"$limit": max_records, "$order": "data_as_of DESC"}
-    log.info("Fetching the %d newest speed readings", max_records)
+    # Find where the data ends, then ask for the window just behind it.
+    watermark = None
+    try:
+        watermark, raw = feed_watermark(session, url, headers)
+        if watermark:
+            log.info("Feed's newest reading is stamped %s (local)", raw)
+    except FeedUnavailable as exc:
+        log.warning("Could not read the feed watermark, scanning instead: %s", exc)
+
+    if watermark is not None:
+        cutoff = _local_literal(watermark - timedelta(minutes=window_minutes))
+        params = {
+            "$where": f"data_as_of > '{cutoff}'",
+            "$order": "data_as_of DESC",
+            "$limit": max_records,
+        }
+        log.info("Fetching readings from the %d minutes before it", window_minutes)
+    else:
+        # No watermark: fall back to scanning the newest rows blindly.
+        params = {"$limit": max_records, "$order": "data_as_of DESC"}
+        log.info("Fetching the %d newest speed readings", max_records)
+
     payload = get_json(session, url, params=params, headers=headers)
     records = _unwrap(payload)
     log.info("Feed returned %d rows", len(records))
@@ -370,11 +424,11 @@ def fetch_speeds(
             )
 
     if len(observations) >= max_records:
-        # Every row scanned was used, so there may be links whose most recent
-        # reading fell outside the window.
+        # The window was truncated by the cap, so links whose newest reading sits
+        # further back are missing entirely.
         log.warning(
-            "Scanned the maximum of %d rows; some links may be missing. Raise "
-            "max_records if the link count looks low.",
+            "Hit the %d row cap; some links may be missing. Narrow window_minutes "
+            "or raise max_records.",
             max_records,
         )
 

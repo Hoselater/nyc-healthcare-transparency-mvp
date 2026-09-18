@@ -65,7 +65,8 @@ CORRIDOR_PATTERNS: tuple[tuple[str, str], ...] = (
     ("RFK Bridge", r"(\bRFK\b|TRIBORO|TRI[- ]?BOROUGH)"),
     ("Williamsburg Bridge", r"WILLIAMSBURG"),
     ("Manhattan Bridge", r"MANHATTAN\s*BR"),
-    ("Brooklyn Bridge", r"BROOKLYN\s*BR"),
+    # The live feed writes this as "BKN Bridge Manhattan Side".
+    ("Brooklyn Bridge", r"(BROOKLYN\s*BR|\bBKN\s*BR)"),
     ("East Side avenues", r"\b(1(ST)?|2(ND)?|3(RD)?|YORK|LEX(INGTON)?|PARK|MADISON)\s*AVE?\b"),
     ("East Side cross streets", r"\bE(AST)?\.?\s*(14|23|34|42|49|57|59|61|72|79|86|96|106|110|116|125)\s*(TH|ST|ND|RD)?\s*ST"),
 )

@@ -277,7 +277,7 @@ days, which is well past what a baseline needs.
 python -m unittest discover -s tests -t .
 ```
 
-Eighty-two offline tests, no internet access needed. The unit tests cover the cases
+Eighty-three offline tests, no internet access needed. The unit tests cover the cases
 that actually broke during development: naive timestamps read in the wrong
 timezone, malformed polylines, cameras at 0/0, baselines derived from too narrow
 a window, and appends to a CSV whose header has since gained a column. The
